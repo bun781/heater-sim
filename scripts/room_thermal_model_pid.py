@@ -1,7 +1,7 @@
 """
 Advanced Room Thermal Simulation with PID Control
+- Environment variable configuration via .env files
 - TRUE discrete setpoint values (step changes, no interpolation)
-- User-editable arrays directly in code
 - Simplified simulation without environmental conditions
 - Modular PID-Simulation interaction at each time step
 """
@@ -12,19 +12,94 @@ import sqlite3
 import os
 from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+def get_env_array(env_var: str, default_values: List[float]) -> np.ndarray:
+    """
+    Get array from environment variable
+    
+    Args:
+        env_var: Environment variable name
+        default_values: Default values if env var not found
+        
+    Returns:
+        NumPy array of values
+    """
+    env_value = os.getenv(env_var)
+    if env_value:
+        try:
+            # Parse comma-separated values
+            values = [float(x.strip()) for x in env_value.split(',')]
+            return np.array(values)
+        except ValueError as e:
+            print(f"⚠️  Error parsing {env_var}: {e}. Using defaults.")
+            return np.array(default_values)
+    else:
+        print(f"⚠️  {env_var} not found in .env file. Using defaults.")
+        return np.array(default_values)
+
+def get_env_float(env_var: str, default_value: float) -> float:
+    """
+    Get float from environment variable
+    
+    Args:
+        env_var: Environment variable name
+        default_value: Default value if env var not found
+        
+    Returns:
+        Float value
+    """
+    env_value = os.getenv(env_var)
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError as e:
+            print(f"⚠️  Error parsing {env_var}: {e}. Using default: {default_value}")
+            return default_value
+    else:
+        print(f"⚠️  {env_var} not found in .env file. Using default: {default_value}")
+        return default_value
 
 # ============================================================================
-# USER-EDITABLE ARRAYS - MODIFY THESE VALUES
+# ENVIRONMENT VARIABLE CONFIGURATION
 # ============================================================================
 
-# Discrete setpoint temperatures (°C) - TRUE step changes
-SETPOINT_ARRAY = np.array([22.0, 22.0, 23.0, 25.0, 24.0, 24.0, 20.0, 20.0, 26.0, 26.0, 21.0, 21.0, 23.0])
+# Load arrays from environment variables
+SETPOINT_ARRAY = get_env_array('SETPOINT_ARRAY', [22.0, 22.0, 23.0, 25.0, 24.0, 24.0, 20.0, 20.0, 26.0, 26.0, 21.0, 21.0, 23.0])
+AMBIENT_ARRAY = get_env_array('AMBIENT_ARRAY', [25.0, 23.0, 27.0, 22.0, 28.0, 24.0, 26.0, 25.0, 29.0, 21.0, 27.0, 23.0, 25.0])
+BACKGROUND_LOSS_ARRAY = get_env_array('BACKGROUND_LOSS_ARRAY', [30000])
 
-# Ambient temperatures (°C)
-AMBIENT_ARRAY = np.array([25.0, 23.0, 27.0, 22.0, 28.0, 24.0, 26.0, 25.0, 29.0, 21.0, 27.0, 23.0, 25.0])
+# Load simulation parameters
+DURATION_HOURS = get_env_float('DURATION_HOURS', 25.0)
+TIME_STEP_MINUTES = get_env_float('TIME_STEP_MINUTES', 0.5)
 
-# Background heat loss values (Watts)
-BACKGROUND_LOSS_ARRAY = np.array([30000])
+# Load room physical properties
+ROOM_VOLUME = get_env_float('ROOM_VOLUME', 140.0)
+COOLING_COEFFICIENT = get_env_float('COOLING_COEFFICIENT', 0.02)
+THERMAL_CAPACITY_PER_M3 = get_env_float('THERMAL_CAPACITY_PER_M3', 1900.0)
+HEATER_EFFICIENCY = get_env_float('HEATER_EFFICIENCY', 0.95)
+
+# Load PID controller settings
+CONSERVATIVE_KP = get_env_float('CONSERVATIVE_KP', 1500)
+CONSERVATIVE_KI = get_env_float('CONSERVATIVE_KI', 200)
+CONSERVATIVE_KD = get_env_float('CONSERVATIVE_KD', 400)
+
+STANDARD_KP = get_env_float('STANDARD_KP', 2500)
+STANDARD_KI = get_env_float('STANDARD_KI', 350)
+STANDARD_KD = get_env_float('STANDARD_KD', 700)
+
+AGGRESSIVE_KP = get_env_float('AGGRESSIVE_KP', 3500)
+AGGRESSIVE_KI = get_env_float('AGGRESSIVE_KI', 500)
+AGGRESSIVE_KD = get_env_float('AGGRESSIVE_KD', 1000)
+
+# Load control system settings
+OUTPUT_MIN = get_env_float('OUTPUT_MIN', 0.0)
+OUTPUT_MAX = get_env_float('OUTPUT_MAX', 100000.0)
+CONTROL_LAG_MINUTES = get_env_float('CONTROL_LAG_MINUTES', 0)
+NOISE_STD = get_env_float('NOISE_STD', 50.0)
 
 # ============================================================================
 
@@ -43,9 +118,9 @@ class SimplePID:
         self.previous_time = 0.0
         self.errors = []
         
-        # Output limits
-        self.output_min = 0.0
-        self.output_max = 100000.0  # 100kW max
+        # Output limits from environment variables
+        self.output_min = OUTPUT_MIN
+        self.output_max = OUTPUT_MAX
         
     def compute(self, setpoint: float, measurement: float, current_time: float) -> float:
         """Compute PID output with proper time handling"""
@@ -53,7 +128,7 @@ class SimplePID:
         
         # Calculate time step
         if self.previous_time == 0.0:
-            dt = 0.5  # Default time step in minutes
+            dt = TIME_STEP_MINUTES  # Use env variable for default time step
         else:
             dt = current_time - self.previous_time
             dt = max(dt, 1e-6)  # Prevent division by zero
@@ -101,7 +176,7 @@ class SimplePID:
 class ArrayBackgroundLoss:
     """Background heat loss from user-defined array"""
     
-    def __init__(self, loss_array: np.ndarray, noise_std: float = 50.0):
+    def __init__(self, loss_array: np.ndarray, noise_std: float = None):
         """
         Initialize array-based background heat loss
         
@@ -110,7 +185,7 @@ class ArrayBackgroundLoss:
             noise_std: Standard deviation of random noise (W)
         """
         self.loss_array = loss_array
-        self.noise_std = noise_std
+        self.noise_std = noise_std if noise_std is not None else NOISE_STD
         
     def get_heat_loss(self, time_index: int) -> float:
         """
@@ -145,12 +220,12 @@ class ThermalSimulation:
     Simplified version without environmental conditions
     """
     
-    def __init__(self, room_volume: float = 140.0, 
-                 cooling_coefficient: float = 0.02,
-                 thermal_capacity_per_m3: float = 1900.0,
-                 heater_efficiency: float = 0.95):
+    def __init__(self, room_volume: float = None, 
+                 cooling_coefficient: float = None,
+                 thermal_capacity_per_m3: float = None,
+                 heater_efficiency: float = None):
         """
-        Initialize thermal simulation
+        Initialize thermal simulation with environment variable defaults
         
         Args:
             room_volume: Room volume in m³
@@ -158,13 +233,14 @@ class ThermalSimulation:
             thermal_capacity_per_m3: Thermal capacity per m³ (J/K/m³)
             heater_efficiency: HVAC heater efficiency (0-1)
         """
-        self.room_volume = room_volume
-        self.cooling_coefficient = cooling_coefficient
-        self.thermal_capacity = room_volume * thermal_capacity_per_m3
-        self.heater_efficiency = heater_efficiency
+        self.room_volume = room_volume if room_volume is not None else ROOM_VOLUME
+        self.cooling_coefficient = cooling_coefficient if cooling_coefficient is not None else COOLING_COEFFICIENT
+        thermal_cap_per_m3 = thermal_capacity_per_m3 if thermal_capacity_per_m3 is not None else THERMAL_CAPACITY_PER_M3
+        self.thermal_capacity = self.room_volume * thermal_cap_per_m3
+        self.heater_efficiency = heater_efficiency if heater_efficiency is not None else HEATER_EFFICIENCY
         
         # Current state
-        self.current_temperature = -2  # Start at 20°C
+        self.current_temperature = 20.0  # Start at 20°C
         self.current_time = 0.0
         
         # Background loss model (will be set later)
@@ -172,7 +248,7 @@ class ThermalSimulation:
         
         # Control lag simulation
         self.control_history = []
-        self.lag_minutes = 0
+        self.lag_minutes = CONTROL_LAG_MINUTES
         
     def reset(self, initial_temperature: float = 20.0):
         """Reset simulation to initial state"""
@@ -187,7 +263,7 @@ class ThermalSimulation:
         self.background_loss = ArrayBackgroundLoss(loss_array)
     
     def step(self, setpoint: float, ambient_temp: float,
-             control_input: float, dt: float = 0.5) -> float:
+             control_input: float, dt: float = None) -> float:
         """
         Perform one simulation time step
         
@@ -200,6 +276,9 @@ class ThermalSimulation:
         Returns:
             New room temperature (°C)
         """
+        
+        if dt is None:
+            dt = TIME_STEP_MINUTES
         
         # Apply control lag
         self.control_history.append((self.current_time, control_input))
@@ -288,8 +367,8 @@ def run_simulation(setpoint_array: np.ndarray,
                   ambient_array: np.ndarray,
                   background_loss_array: np.ndarray,
                   pid_controller: SimplePID,
-                  duration_hours: float = 25.0,
-                  dt_minutes: float = 0.5) -> Dict[str, np.ndarray]:
+                  duration_hours: float = None,
+                  dt_minutes: float = None) -> Dict[str, np.ndarray]:
     """
     Run complete simulation with TRUE discrete setpoints
     
@@ -304,6 +383,12 @@ def run_simulation(setpoint_array: np.ndarray,
     Returns:
         Dictionary containing simulation results
     """
+    
+    # Use environment variables for defaults
+    if duration_hours is None:
+        duration_hours = DURATION_HOURS
+    if dt_minutes is None:
+        dt_minutes = TIME_STEP_MINUTES
     
     print(f"🔄 Running simulation: {pid_controller.name} PID")
     print(f"   Duration: {duration_hours} hours, Time step: {dt_minutes} minutes")
@@ -486,8 +571,8 @@ def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str,
     """Print comprehensive results"""
     
     print("\n" + "="*100)
-    print("SIMPLIFIED ROOM THERMAL SIMULATION - TRUE DISCRETE SETPOINTS & ARRAY BACKGROUND LOSS")
-    print("MODULAR PID-SIMULATION INTERACTION WITH USER-EDITABLE ARRAYS")
+    print("ENVIRONMENT VARIABLE CONFIGURED ROOM THERMAL SIMULATION")
+    print("TRUE DISCRETE SETPOINTS & ARRAY BACKGROUND LOSS FROM .ENV FILES")
     print("="*100)
     print(f"Room Volume: {room_info['volume']:.0f} m³, Thermal Capacity: {room_info['thermal_capacity']/1000:.0f} kJ/K")
     print("-"*100)
@@ -507,13 +592,13 @@ def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str,
     total_loss = np.mean([data['total_background_loss'] for data in performance_data])
     avg_energy = np.mean([data['energy'] for data in performance_data])
     
-    print(f"\n🔥 ARRAY-BASED BACKGROUND HEAT LOSS ANALYSIS:")
-    print(f"• Heat Loss Model: User-defined array of loss values")
-    print(f"• Independent: No relationship to temperature differences")
+    print(f"\n🔥 ENVIRONMENT VARIABLE CONFIGURATION:")
+    print(f"• Configuration: Loaded from .env file")
+    print(f"• Arrays: Comma-separated values in environment variables")
     print(f"• Average background loss: {avg_loss/1000:.2f} kW")
     print(f"• Total background loss energy: {total_loss:.2f} kWh")
     print(f"• Background vs HVAC energy: {total_loss/avg_energy*100:.1f}%")
-    print(f"• Flexible: Any loss pattern can be specified")
+    print(f"• Flexible: Modify .env file to change all parameters")
     
     # Best performers
     best_accuracy = min(performance_data, key=lambda x: x['mae'])
@@ -525,56 +610,72 @@ def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str,
     print(f"Best Comfort: {best_comfort['name']} ({best_comfort['comfort_percent']:.1f}%)")
     print(f"Most Efficient: {best_energy['name']} ({best_energy['energy']:.2f} kWh)")
 
+def print_env_config():
+    """Print current environment variable configuration"""
+    print(f"\n📋 CURRENT ENVIRONMENT CONFIGURATION:")
+    print(f"   • Setpoint Array: {len(SETPOINT_ARRAY)} values: {SETPOINT_ARRAY}")
+    print(f"   • Ambient Array: {len(AMBIENT_ARRAY)} values: {AMBIENT_ARRAY}")
+    print(f"   • Background Loss Array: {len(BACKGROUND_LOSS_ARRAY)} values: {BACKGROUND_LOSS_ARRAY}")
+    print(f"   • Duration: {DURATION_HOURS} hours")
+    print(f"   • Time Step: {TIME_STEP_MINUTES} minutes")
+    print(f"   • Room Volume: {ROOM_VOLUME} m³")
+    print(f"   • Cooling Coefficient: {COOLING_COEFFICIENT}")
+    print(f"   • Thermal Capacity: {THERMAL_CAPACITY_PER_M3} J/K/m³")
+    print(f"   • Heater Efficiency: {HEATER_EFFICIENCY}")
+    print(f"   • Conservative PID: Kp={CONSERVATIVE_KP}, Ki={CONSERVATIVE_KI}, Kd={CONSERVATIVE_KD}")
+    print(f"   • Standard PID: Kp={STANDARD_KP}, Ki={STANDARD_KI}, Kd={STANDARD_KD}")
+    print(f"   • Aggressive PID: Kp={AGGRESSIVE_KP}, Ki={AGGRESSIVE_KI}, Kd={AGGRESSIVE_KD}")
+
 def main():
-    """Main simulation with TRUE discrete setpoints and simplified model"""
+    """Main simulation with environment variable configuration"""
     
-    print("🏠 SIMPLIFIED ROOM THERMAL SIMULATION")
-    print("="*50)
-    print("🎯 TRUE Discrete Setpoints + Array Background Loss + Simplified Model")
+    print("🏠 ENVIRONMENT VARIABLE CONFIGURED ROOM THERMAL SIMULATION")
+    print("="*60)
+    print("🎯 Configuration loaded from .env files")
+    
+    # Check for .env file
+    if not os.path.exists('.env'):
+        print("⚠️  No .env file found! Creating one from .env.example...")
+        if os.path.exists('.env.example'):
+            import shutil
+            shutil.copy('.env.example', '.env')
+            print("✅ Created .env file from .env.example")
+            print("💡 You can now modify .env to customize the simulation")
+        else:
+            print("❌ No .env.example file found either!")
+            print("💡 Using hardcoded defaults")
     
     # Check packages
     try:
         import numpy as np
         import matplotlib.pyplot as plt
+        from dotenv import load_dotenv
         print("✅ All required packages available")
     except ImportError as e:
         print(f"❌ Missing package: {e}")
+        if 'dotenv' in str(e):
+            print("💡 Install python-dotenv: pip install python-dotenv")
         return
     
-    # Simulation parameters
-    duration_hours = 25.0
-    dt_minutes = 0.5
+    # Print current configuration
+    print_env_config()
     
-    print(f"\n⚙️ Simulation Configuration:")
-    print(f"   • Duration: {duration_hours} hours")
-    print(f"   • Time Step: {dt_minutes} minutes")
-    print(f"   • Total Points: {int(duration_hours * 60 / dt_minutes)}")
-    
-    # Use the user-editable arrays defined at the top of the file
-    print(f"\n📊 User-Editable Arrays (modify at top of file):")
-    print(f"   • Setpoint Array: {len(SETPOINT_ARRAY)} values: {SETPOINT_ARRAY} °C")
-    print(f"   • Ambient Array: {len(AMBIENT_ARRAY)} values: {AMBIENT_ARRAY} °C")
-    print(f"   • Background Loss Array: {len(BACKGROUND_LOSS_ARRAY)} values: {BACKGROUND_LOSS_ARRAY} W")
-    
-    # Create PID controllers
+    # Create PID controllers using environment variables
     controllers = [
-        SimplePID(kp=1500, ki=200, kd=400, name="Conservative"),
-        SimplePID(kp=2500, ki=350, kd=700, name="Standard"),
-        SimplePID(kp=3500, ki=500, kd=1000, name="Aggressive")
+        SimplePID(kp=CONSERVATIVE_KP, ki=CONSERVATIVE_KI, kd=CONSERVATIVE_KD, name="Conservative"),
+        SimplePID(kp=STANDARD_KP, ki=STANDARD_KI, kd=STANDARD_KD, name="Standard"),
+        SimplePID(kp=AGGRESSIVE_KP, ki=AGGRESSIVE_KI, kd=AGGRESSIVE_KD, name="Aggressive")
     ]
     
-    print(f"\n🎛️ PID Controllers:")
-    for controller in controllers:
-        print(f"   • {controller.name}: Kp={controller.kp}, Ki={controller.ki}, Kd={controller.kd}")
-    
-    print(f"\n🔥 Simplified Model Features:")
+    print(f"\n🔥 Environment Variable Features:")
+    print(f"   • All parameters loaded from .env file")
     print(f"   • TRUE discrete setpoints (step changes, no interpolation)")
-    print(f"   • User-editable arrays at top of file")
-    print(f"   • No environmental conditions (solar, internal gains)")
-    print(f"   • Pure Newton's Law of Cooling + HVAC + Background Loss")
+    print(f"   • Comma-separated arrays in environment variables")
+    print(f"   • Easy configuration without code changes")
+    print(f"   • Simplified thermal model (Newton's Law of Cooling)")
     
     # Run simulations
-    print(f"\n🚀 Running Modular PID-Simulation Interactions:")
+    print(f"\n🚀 Running Environment-Configured Simulations:")
     all_results = {}
     performance_data = []
     
@@ -585,8 +686,8 @@ def main():
                 ambient_array=AMBIENT_ARRAY,
                 background_loss_array=BACKGROUND_LOSS_ARRAY,
                 pid_controller=controller,
-                duration_hours=duration_hours,
-                dt_minutes=dt_minutes
+                duration_hours=DURATION_HOURS,
+                dt_minutes=TIME_STEP_MINUTES
             )
             all_results[controller.name] = results
             performance = analyze_results(results)
@@ -609,13 +710,13 @@ def main():
     print_results(performance_data, room_info)
     create_plots(all_results)
     
-    print(f"\n✅ Simplified simulation completed successfully!")
+    print(f"\n✅ Environment variable simulation completed successfully!")
     print(f"\n🎯 Key Features:")
+    print(f"   • All configuration in .env file")
+    print(f"   • No code changes needed for parameter adjustments")
     print(f"   • TRUE discrete setpoints (perfect step changes)")
-    print(f"   • User-editable arrays at top of file")
-    print(f"   • Simplified thermal model (no environmental conditions)")
+    print(f"   • Comma-separated array format")
     print(f"   • Modular PID-Simulation interaction")
-    print(f"   • Newton's Law of Cooling with control lag")
 
 if __name__ == "__main__":
     try:
