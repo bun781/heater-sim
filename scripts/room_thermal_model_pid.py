@@ -24,7 +24,7 @@ SETPOINT_ARRAY = np.array([22.0, 22.0, 23.0, 25.0, 24.0, 24.0, 20.0, 20.0, 26.0,
 AMBIENT_ARRAY = np.array([25.0, 23.0, 27.0, 22.0, 28.0, 24.0, 26.0, 25.0, 29.0, 21.0, 27.0, 23.0, 25.0])
 
 # Background heat loss values (Watts)
-BACKGROUND_LOSS_ARRAY = np.array([10000])
+BACKGROUND_LOSS_ARRAY = np.array([30000])
 
 # ============================================================================
 
