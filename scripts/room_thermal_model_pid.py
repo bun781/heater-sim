@@ -104,74 +104,209 @@ NOISE_STD = get_env_float('NOISE_STD', 50.0)
 # ============================================================================
 
 class SimplePID:
-    """Simple PID Controller with anti-windup and derivative filtering"""
+    """
+    Improved PID Controller based on Brett Beauregard's Guide
+    Includes all major improvements: sample time, derivative kick elimination,
+    reset windup prevention, auto/manual mode, and proper initialization
+    """
     
     def __init__(self, kp: float, ki: float, kd: float, name: str):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
         self.name = name
         
-        # Internal state
-        self.integral = 0.0
-        self.previous_error = 0.0
-        self.previous_time = 0.0
-        self.errors = []
+        # Tuning parameters (will be modified for fixed sample time)
+        self.dispKp = kp  # Display/user-entered values
+        self.dispKi = ki
+        self.dispKd = kd
+        
+        # Working parameters (modified for sample time)
+        self.kp = kp
+        self.ki = ki * TIME_STEP_MINUTES  # Convert to per-sample-time basis
+        self.kd = kd / TIME_STEP_MINUTES  # Convert to per-sample-time basis
+        
+        # Sample time (minutes) - fixed from environment variable
+        self.sample_time = TIME_STEP_MINUTES
+        
+        # Working variables
+        self.input = 0.0
+        self.output = 0.0
+        self.setpoint = 0.0
+        self.i_term = 0.0
+        self.last_input = 0.0
+        self.last_time = 0.0
         
         # Output limits from environment variables
         self.output_min = OUTPUT_MIN
         self.output_max = OUTPUT_MAX
         
+        # Auto/Manual mode
+        self.in_auto = True
+        
+        # For debugging/monitoring
+        self.errors = []
+        
     def compute(self, setpoint: float, measurement: float, current_time: float) -> float:
-        """Compute PID output with proper time handling"""
+        """
+        Compute PID output with Brett Beauregard's improvements
+        
+        Args:
+            setpoint: Desired value
+            measurement: Current measurement (Input)
+            current_time: Current time (minutes)
+            
+        Returns:
+            Control output value
+        """
+        # Store inputs
+        self.input = measurement
+        self.setpoint = setpoint
+        
+        # Only compute if in automatic mode
+        if not self.in_auto:
+            return self.output
+        
+        # Check if enough time has passed (sample time management)
+        time_change = current_time - self.last_time
+        if self.last_time > 0 and time_change < self.sample_time:
+            return self.output  # Not time to compute yet
+        
+        # Error calculation
         error = setpoint - measurement
         
-        # Calculate time step
-        if self.previous_time == 0.0:
-            dt = TIME_STEP_MINUTES  # Use env variable for default time step
-        else:
-            dt = current_time - self.previous_time
-            dt = max(dt, 1e-6)  # Prevent division by zero
-        
-        # PID calculation
-        P = self.kp * error
-        
-        # Integral term with anti-windup
-        self.integral += error * dt
-        I = self.ki * self.integral
-        
-        # Derivative term
-        if dt > 0:
-            D = self.kd * (error - self.previous_error) / dt
-        else:
-            D = 0.0
-        
-        # Total output
-        output = P + I + D
-        
-        # Apply output limits and anti-windup
-        if output > self.output_max:
-            output = self.output_max
-            # Anti-windup: reduce integral
-            self.integral -= (P + I + D - self.output_max) / self.ki if self.ki != 0 else 0
-        elif output < self.output_min:
-            output = self.output_min
-            # Anti-windup: reduce integral
-            self.integral -= (P + I + D - self.output_min) / self.ki if self.ki != 0 else 0
-        
-        # Update state
-        self.previous_error = error
-        self.previous_time = current_time
+        # Store error for debugging
         self.errors.append(error)
+        if len(self.errors) > 1000:  # Limit memory usage
+            self.errors.pop(0)
+        
+        # Integral term (with anti-windup handled later)
+        self.i_term += self.ki * error
+        
+        # Derivative term - "Derivative on Measurement" to avoid derivative kick
+        # This prevents spikes when setpoint changes suddenly
+        d_input = measurement - self.last_input
+        
+        # Compute preliminary output
+        output = self.kp * error + self.i_term - self.kd * d_input
+        
+        # Apply output limits and anti-windup (improved method)
+        if output > self.output_max:
+            # Anti-windup: back-calculate integral term
+            self.i_term -= output - self.output_max
+            output = self.output_max
+        elif output < self.output_min:
+            # Anti-windup: back-calculate integral term  
+            self.i_term += self.output_min - output
+            output = self.output_min
+        
+        # Store outputs
+        self.output = output
+        
+        # Remember some variables for next time
+        self.last_input = measurement
+        self.last_time = current_time
         
         return output
     
+    def set_tunings(self, kp: float, ki: float, kd: float):
+        """
+        Update PID tuning parameters
+        Handles conversion to sample-time basis
+        """
+        if kp < 0 or ki < 0 or kd < 0:
+            return  # Don't allow negative tunings
+        
+        # Store display values
+        self.dispKp = kp
+        self.dispKi = ki
+        self.dispKd = kd
+        
+        # Convert to working values based on sample time
+        self.kp = kp
+        self.ki = ki * self.sample_time
+        self.kd = kd / self.sample_time
+    
+    def set_sample_time(self, new_sample_time: float):
+        """
+        Update sample time and adjust tuning parameters accordingly
+        """
+        if new_sample_time <= 0:
+            return
+        
+        # Calculate ratio
+        ratio = new_sample_time / self.sample_time
+        
+        # Adjust tuning parameters
+        self.ki *= ratio
+        self.kd /= ratio
+        
+        # Update sample time
+        self.sample_time = new_sample_time
+    
+    def set_output_limits(self, min_val: float, max_val: float):
+        """Set output limits"""
+        if min_val >= max_val:
+            return
+        
+        self.output_min = min_val
+        self.output_max = max_val
+        
+        # Clamp current output if needed
+        if self.output > self.output_max:
+            self.output = self.output_max
+        elif self.output < self.output_min:
+            self.output = self.output_min
+        
+        # Clamp integral term if needed
+        if self.i_term > self.output_max:
+            self.i_term = self.output_max
+        elif self.i_term < self.output_min:
+            self.i_term = self.output_min
+    
+    def set_mode(self, mode: str):
+        """
+        Set controller mode: 'AUTO' or 'MANUAL'
+        Handles proper initialization when switching to AUTO
+        """
+        new_auto = (mode.upper() == 'AUTO')
+        
+        # Check for transition from MANUAL to AUTO
+        if new_auto and not self.in_auto:
+            self.initialize()
+        
+        self.in_auto = new_auto
+    
+    def initialize(self):
+        """
+        Initialize controller for bumpless transfer from MANUAL to AUTO
+        This is called automatically when switching to AUTO mode
+        """
+        self.i_term = self.output  # Set integral to current output
+        self.last_input = self.input  # Prevent derivative spike
+        
+        # Ensure integral term is within limits
+        if self.i_term > self.output_max:
+            self.i_term = self.output_max
+        elif self.i_term < self.output_min:
+            self.i_term = self.output_min
+    
     def reset(self):
-        """Reset PID controller state"""
-        self.integral = 0.0
-        self.previous_error = 0.0
-        self.previous_time = 0.0
+        """
+        Reset PID controller state
+        Required method for compatibility with existing simulation
+        """
+        self.i_term = 0.0
+        self.last_input = 0.0
+        self.last_time = 0.0
+        self.output = 0.0
         self.errors = []
+        self.in_auto = True  # Default to automatic mode
+    
+    def get_mode(self) -> str:
+        """Get current mode"""
+        return "AUTO" if self.in_auto else "MANUAL"
+    
+    def get_tunings(self) -> tuple:
+        """Get current tuning parameters (display values)"""
+        return (self.dispKp, self.dispKi, self.dispKd)
 
 class ArrayBackgroundLoss:
     """Background heat loss from user-defined array"""

@@ -5,6 +5,10 @@ Main runner script for the ODE Solver and Beautiful Graphs project
 
 import sys
 import os
+import subprocess
+
+# This will automatically find the correct python from your (venv)
+python_executable = sys.executable
 
 def show_menu():
     """Display the main menu"""
@@ -27,15 +31,18 @@ def show_menu():
     print("=" * 50)
 
 def run_script(script_name):
-    """Run a specific script"""
+    """Run a specific script using a reliable method"""
     try:
         script_path = os.path.join('scripts', script_name)
         if os.path.exists(script_path):
             print(f"\n🚀 Running {script_name}...")
             print("-" * 30)
-            exec(open(script_path).read())
+            # This method is much more reliable than the old one
+            subprocess.run([python_executable, script_path], check=True)
         else:
             print(f"❌ Script {script_name} not found!")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Script {script_name} failed with an error.")
     except Exception as e:
         print(f"❌ Error running {script_name}: {e}")
 
