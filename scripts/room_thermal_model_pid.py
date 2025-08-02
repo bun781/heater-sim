@@ -889,6 +889,74 @@ def run_simulation(setpoint_array: np.ndarray,
         'thermal_capacity': simulation.thermal_capacity
     }
 
+def run_simulation_with_ziegler_tuning(setpoint_array,
+                                       ambient_array,
+                                       background_loss_array,
+                                       pid_controller,
+                                       duration_hours=None,
+                                       dt_minutes=None):
+    """Perform ZN tuning, then run the full simulation and return results."""
+
+    # --- Perform ZN tuning ---
+    def short_test(pid, kp, hours=2.0):
+        pid.reset()
+        pid.set_tunings(kp, 0, 0)
+        sim = ThermalSimulation()
+        sim.set_background_loss_array(background_loss_array)  # ✅ so it's not None
+        sim.reset()
+
+        setpoint, ambient = 22.0, 20.0
+        temps = []
+        for t in np.arange(0, hours * 60, TIME_STEP_MINUTES):
+            temp = sim.get_current_temperature()
+            out = pid.compute(setpoint, temp, t)
+            sim.step(setpoint, ambient, out, TIME_STEP_MINUTES)
+            temps.append(sim.get_current_temperature())
+        return np.array(temps)
+
+    def detect_sustained(temps):
+        from scipy.signal import find_peaks
+        peaks, _ = find_peaks(temps)
+        if len(peaks) < 2:
+            return False, None
+        periods = np.diff(peaks) * TIME_STEP_MINUTES
+        avg_period = np.mean(periods)
+        return (np.std(periods) < 0.1 * avg_period), avg_period
+
+    def find_ku_tu(pid):
+        kp = 100.0
+        while kp <= 10000:
+            temps = short_test(pid, kp)
+            sustained, Tu = detect_sustained(temps)
+            print(f"[Tuning] Kp={kp}, sustained={sustained}, Tu={Tu}")
+            if sustained:
+                return kp, Tu
+            kp += 100.0
+        raise RuntimeError("Ku not found")
+
+    def apply_zn(pid, Ku, Tu):
+        Kp = 0.6 * Ku
+        Ki = 1.2 * Ku / Tu
+        Kd = 0.075 * Ku * Tu
+        pid.set_tunings(Kp, Ki, Kd)
+        print(f"[Tuning] Applied ZN: Kp={Kp:.2f}, Ki={Ki:.2f}, Kd={Kd:.2f}")
+
+    print("\n🚀 Running Simulation with Ziegler–Nichols Tuning...")
+    print("🎯 Running Ziegler–Nichols tuning...")
+    Ku, Tu = find_ku_tu(pid_controller)
+    apply_zn(pid_controller, Ku, Tu)
+    print("✅ Tuning complete\n")
+
+    # --- Now run your normal simulation ---
+    return run_simulation(
+        setpoint_array,
+        ambient_array,
+        background_loss_array,
+        pid_controller,
+        duration_hours,
+        dt_minutes
+    )
+
 def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     """Analyze simulation results"""
     temp = results['temperature']
@@ -1055,13 +1123,14 @@ def print_env_config():
     print(f"   • Standard PID: Kp={STANDARD_KP}, Ki={STANDARD_KI}, Kd={STANDARD_KD}")
     print(f"   • Aggressive PID: Kp={AGGRESSIVE_KP}, Ki={AGGRESSIVE_KI}, Kd={AGGRESSIVE_KD}")
 
+
 def main():
     """Main simulation with environment variable configuration"""
-    
+
     print("🏠 ENVIRONMENT VARIABLE CONFIGURED ROOM THERMAL SIMULATION")
-    print("="*60)
+    print("=" * 60)
     print("🎯 Configuration loaded from .env files")
-    
+
     # Check for .env file
     if not os.path.exists('.env'):
         print("⚠️  No .env file found! Creating one from .env.example...")
@@ -1073,7 +1142,7 @@ def main():
         else:
             print("❌ No .env.example file found either!")
             print("💡 Using hardcoded defaults")
-    
+
     # Check packages
     try:
         import numpy as np
@@ -1085,60 +1154,68 @@ def main():
         if 'dotenv' in str(e):
             print("💡 Install python-dotenv: pip install python-dotenv")
         return
-    
+
     # Print current configuration
     print_env_config()
-    
-    # Create PID controllers using environment variables
+
+    # Create PID controllers
     controllers = [
-        SimplePID(kp=CONSERVATIVE_KP, ki=CONSERVATIVE_KI, kd=CONSERVATIVE_KD, name="Conservative"),
-        SimplePID(kp=STANDARD_KP, ki=STANDARD_KI, kd=STANDARD_KD, name="Standard"),
-        SimplePID(kp=AGGRESSIVE_KP, ki=AGGRESSIVE_KI, kd=AGGRESSIVE_KD, name="Aggressive")
+        SimplePID(kp=STANDARD_KP, ki=STANDARD_KI, kd=STANDARD_KD, name="Ziegler–Nichols Tuned")
     ]
-    
+
     print(f"\n🔥 Environment Variable Features:")
     print(f"   • All parameters loaded from .env file")
     print(f"   • TRUE discrete setpoints (step changes, no interpolation)")
     print(f"   • Comma-separated arrays in environment variables")
     print(f"   • Easy configuration without code changes")
     print(f"   • Simplified thermal model (Newton's Law of Cooling)")
-    
+
     # Run simulations
     print(f"\n🚀 Running Environment-Configured Simulations:")
     all_results = {}
     performance_data = []
-    
+
     for controller in controllers:
         try:
-            results = run_simulation(
-                setpoint_array=SETPOINT_ARRAY,
-                ambient_array=AMBIENT_ARRAY,
-                background_loss_array=BACKGROUND_LOSS_ARRAY,
-                pid_controller=controller,
-                duration_hours=DURATION_HOURS,
-                dt_minutes=TIME_STEP_MINUTES
-            )
+            if controller.name == "Ziegler–Nichols Tuned":
+                results = run_simulation_with_ziegler_tuning(
+                    SETPOINT_ARRAY,
+                    AMBIENT_ARRAY,
+                    BACKGROUND_LOSS_ARRAY,
+                    controller,
+                    DURATION_HOURS,
+                    TIME_STEP_MINUTES
+                )
+            else:
+                results = run_simulation(
+                    SETPOINT_ARRAY,
+                    AMBIENT_ARRAY,
+                    BACKGROUND_LOSS_ARRAY,
+                    controller,
+                    DURATION_HOURS,
+                    TIME_STEP_MINUTES
+                )
+
             all_results[controller.name] = results
-            performance = analyze_results(results)
-            performance_data.append(performance)
-            
+            performance_data.append(analyze_results(results))
+
         except Exception as e:
             print(f"   ❌ Error with {controller.name}: {e}")
-    
+
     if not all_results:
         print("❌ No simulations completed!")
         return
-    
+
     # Results analysis
     first_result = list(all_results.values())[0]
     room_info = {
         'volume': first_result['room_volume'],
         'thermal_capacity': first_result['thermal_capacity']
     }
-    
+
     print_results(performance_data, room_info)
     create_plots(all_results)
-    
+
     print(f"\n✅ Environment variable simulation completed successfully!")
     print(f"\n🎯 Key Features:")
     print(f"   • All configuration in .env file")
@@ -1146,6 +1223,7 @@ def main():
     print(f"   • TRUE discrete setpoints (perfect step changes)")
     print(f"   • Comma-separated array format")
     print(f"   • Modular PID-Simulation interaction")
+
 
 if __name__ == "__main__":
     try:

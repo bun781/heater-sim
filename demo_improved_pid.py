@@ -7,7 +7,7 @@ Shows the key improvements in action
 import sys
 sys.path.append('scripts')
 
-from room_thermal_model_pid import SimplePID
+from scripts.room_thermal_model_pid import SimplePID
 
 def main():
     print("🎯 Brett Beauregard's PID Improvements - Quick Demo")

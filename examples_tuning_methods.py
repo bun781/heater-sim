@@ -8,7 +8,7 @@ import sys
 import numpy as np
 sys.path.append('scripts')
 
-from room_thermal_model_pid import SimplePID, PIDTuner
+from scripts.room_thermal_model_pid import SimplePID, PIDTuner
 
 def example_1_ziegler_nichols():
     """Example 1: Using Ziegler-Nichols tuning"""
