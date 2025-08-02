@@ -308,6 +308,278 @@ class SimplePID:
         """Get current tuning parameters (display values)"""
         return (self.dispKp, self.dispKi, self.dispKd)
 
+# ============================================================================
+# PID TUNING METHODS
+# ============================================================================
+
+class PIDTuner:
+    """
+    PID Controller Auto-Tuning Methods
+    Implements Ziegler-Nichols, Cohen-Coon, and Relay Auto-Tuning
+    """
+    
+    @staticmethod
+    def ziegler_nichols_closed_loop(ku: float, tu: float, controller_type: str = "PID") -> tuple:
+        """
+        Ziegler-Nichols Closed-Loop (Ultimate Gain) Method
+        
+        Args:
+            ku: Ultimate gain (critical gain where system oscillates)
+            tu: Ultimate period (oscillation period at critical gain)
+            controller_type: "P", "PI", "PD", or "PID"
+            
+        Returns:
+            Tuple of (Kp, Ki, Kd) gains
+        """
+        if controller_type.upper() == "P":
+            kp = 0.5 * ku
+            ki = 0.0
+            kd = 0.0
+        elif controller_type.upper() == "PI":
+            kp = 0.45 * ku
+            ki = 1.2 * ku / tu
+            kd = 0.0
+        elif controller_type.upper() == "PD":
+            kp = 0.8 * ku
+            ki = 0.0
+            kd = 0.1 * ku * tu
+        elif controller_type.upper() == "PID":
+            # Classic Ziegler-Nichols PID
+            kp = 0.6 * ku
+            ki = 1.2 * ku / tu  
+            kd = 0.075 * ku * tu
+        else:
+            raise ValueError("Controller type must be P, PI, PD, or PID")
+        
+        return (kp, ki, kd)
+    
+    @staticmethod
+    def ziegler_nichols_conservative(ku: float, tu: float) -> tuple:
+        """
+        Conservative Ziegler-Nichols tuning (less aggressive)
+        
+        Args:
+            ku: Ultimate gain
+            tu: Ultimate period
+            
+        Returns:
+            Tuple of (Kp, Ki, Kd) gains
+        """
+        kp = 0.33 * ku  # More conservative than 0.6
+        ki = 0.66 * ku / tu  # Less aggressive integral
+        kd = 0.11 * ku * tu  # Slightly more derivative
+        
+        return (kp, ki, kd)
+    
+    @staticmethod
+    def cohen_coon(K: float, L: float, T: float) -> tuple:
+        """
+        Cohen-Coon Tuning Method
+        Based on open-loop step response parameters
+        
+        Args:
+            K: Process steady-state gain (ΔOutput/ΔInput)
+            L: Dead time (delay before response starts)
+            T: Time constant (time to reach 63% of final value)
+            
+        Returns:
+            Tuple of (Kp, Ki, Kd) gains
+        """
+        # Cohen-Coon PID formulas
+        tau = L / T  # Dimensionless ratio
+        
+        # Proportional gain
+        kp = (1.35 / K) * (T / L) * (1 + 0.18 * tau)
+        
+        # Integral time constant
+        Ti = L * (2.5 - 2 * tau) / (1 - 0.39 * tau)
+        ki = kp / Ti
+        
+        # Derivative time constant  
+        Td = L * (0.37 - 0.37 * tau) / (1 - 0.81 * tau)
+        kd = kp * Td
+        
+        return (kp, ki, kd)
+    
+    @staticmethod
+    def relay_auto_tune(pid_controller, setpoint: float, measurement_func, 
+                       control_func, relay_amplitude: float = 10.0, 
+                       max_cycles: int = 20, dt: float = 0.1) -> tuple:
+        """
+        Relay (Åström-Hägglund) Auto-Tuning Method
+        
+        Args:
+            pid_controller: PID controller instance
+            setpoint: Target setpoint for tuning
+            measurement_func: Function that returns current measurement
+            control_func: Function that applies control output
+            relay_amplitude: Amplitude of relay output
+            max_cycles: Maximum number of oscillation cycles
+            dt: Time step for simulation
+            
+        Returns:
+            Tuple of (Kp, Ki, Kd, Ku, Tu) where Ku and Tu are ultimate values
+        """
+        import numpy as np
+        
+        # Store original tuning
+        original_tuning = pid_controller.get_tunings()
+        
+        # Set controller to manual mode for relay test
+        pid_controller.set_mode('MANUAL')
+        
+        # Data collection arrays
+        time_data = []
+        measurement_data = []
+        output_data = []
+        
+        # Relay control variables
+        relay_state = 1  # Start with positive relay
+        last_measurement = measurement_func()
+        last_switch_time = 0
+        switch_times = []
+        switch_measurements = []
+        
+        print("🔄 Starting Relay Auto-Tuning...")
+        print(f"   Relay amplitude: ±{relay_amplitude}")
+        print(f"   Target setpoint: {setpoint}")
+        
+        current_time = 0
+        cycles_completed = 0
+        
+        try:
+            while cycles_completed < max_cycles and current_time < 300:  # Max 5 minutes
+                # Get current measurement
+                current_measurement = measurement_func()
+                
+                # Relay logic: switch when crossing setpoint
+                if ((current_measurement > setpoint and relay_state == 1) or 
+                    (current_measurement < setpoint and relay_state == -1)):
+                    
+                    # Record switch
+                    switch_times.append(current_time)
+                    switch_measurements.append(current_measurement)
+                    
+                    # Switch relay
+                    relay_state *= -1
+                    
+                    print(f"   Switch {len(switch_times)}: t={current_time:.1f}s, "
+                          f"T={current_measurement:.2f}°C, Relay={relay_state:+d}")
+                
+                # Apply relay output
+                relay_output = relay_state * relay_amplitude
+                pid_controller.output = relay_output
+                control_func(relay_output)
+                
+                # Store data
+                time_data.append(current_time)
+                measurement_data.append(current_measurement)
+                output_data.append(relay_output)
+                
+                # Count complete cycles (need at least 4 switches for 2 cycles)
+                if len(switch_times) >= 4:
+                    cycles_completed = len(switch_times) // 2
+                
+                current_time += dt
+        
+        except Exception as e:
+            print(f"❌ Relay tuning failed: {e}")
+            # Restore original tuning
+            pid_controller.set_tunings(*original_tuning)
+            pid_controller.set_mode('AUTO')
+            return original_tuning + (0, 0)
+        
+        # Analyze results
+        if len(switch_times) < 4:
+            print("❌ Insufficient oscillations for tuning")
+            pid_controller.set_tunings(*original_tuning)
+            pid_controller.set_mode('AUTO')
+            return original_tuning + (0, 0)
+        
+        # Calculate ultimate gain and period
+        # Use last few complete cycles for better accuracy
+        periods = []
+        amplitudes = []
+        
+        for i in range(2, len(switch_times)-1, 2):  # Every other switch = one period
+            period = switch_times[i+2] - switch_times[i]
+            periods.append(period)
+            
+            # Calculate amplitude from measurement data in this period
+            start_idx = int(switch_times[i] / dt)
+            end_idx = int(switch_times[i+2] / dt)
+            if end_idx < len(measurement_data):
+                period_data = measurement_data[start_idx:end_idx]
+                amplitude = (max(period_data) - min(period_data)) / 2
+                amplitudes.append(amplitude)
+        
+        if not periods or not amplitudes:
+            print("❌ Could not calculate oscillation parameters")
+            pid_controller.set_tunings(*original_tuning)
+            pid_controller.set_mode('AUTO')
+            return original_tuning + (0, 0)
+        
+        # Average the last few periods and amplitudes
+        Tu = np.mean(periods[-3:]) if len(periods) >= 3 else np.mean(periods)
+        amplitude_avg = np.mean(amplitudes[-3:]) if len(amplitudes) >= 3 else np.mean(amplitudes)
+        
+        # Calculate ultimate gain using relay method
+        # Ku = 4 * relay_amplitude / (π * amplitude)
+        Ku = (4 * relay_amplitude) / (np.pi * amplitude_avg)
+        
+        print(f"✅ Relay tuning completed:")
+        print(f"   Ultimate Period (Tu): {Tu:.2f} seconds")
+        print(f"   Ultimate Gain (Ku): {Ku:.2f}")
+        print(f"   Oscillation Amplitude: {amplitude_avg:.2f}°C")
+        
+        # Apply Ziegler-Nichols tuning based on ultimate values
+        kp, ki, kd = PIDTuner.ziegler_nichols_closed_loop(Ku, Tu, "PID")
+        
+        print(f"   Calculated PID gains: Kp={kp:.1f}, Ki={ki:.3f}, Kd={kd:.1f}")
+        
+        # Apply new tuning and switch back to auto
+        pid_controller.set_tunings(kp, ki, kd)
+        pid_controller.set_mode('AUTO')
+        
+        return (kp, ki, kd, Ku, Tu)
+    
+    @staticmethod
+    def process_reaction_curve(step_input: float, time_data: list, 
+                              response_data: list) -> tuple:
+        """
+        Extract process parameters from step response data
+        
+        Args:
+            step_input: Magnitude of step input applied
+            time_data: List of time values
+            response_data: List of response measurements
+            
+        Returns:
+            Tuple of (K, L, T) - gain, dead time, time constant
+        """
+        import numpy as np
+        
+        time_array = np.array(time_data)
+        response_array = np.array(response_data)
+        
+        # Find steady-state gain
+        initial_value = response_array[0]
+        final_value = response_array[-1]
+        K = (final_value - initial_value) / step_input
+        
+        # Find dead time (when response starts)
+        threshold = initial_value + 0.05 * (final_value - initial_value)
+        dead_time_idx = np.where(response_array > threshold)[0]
+        L = time_array[dead_time_idx[0]] if len(dead_time_idx) > 0 else 0
+        
+        # Find time constant (63% of final value)
+        target_63 = initial_value + 0.63 * (final_value - initial_value)
+        time_63_idx = np.where(response_array > target_63)[0]
+        time_63 = time_array[time_63_idx[0]] if len(time_63_idx) > 0 else time_array[-1]
+        T = time_63 - L
+        
+        return (K, L, T)
+
 class ArrayBackgroundLoss:
     """Background heat loss from user-defined array"""
     
