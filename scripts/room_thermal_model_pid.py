@@ -1035,13 +1035,64 @@ def run_simulation_with_cohen_coon_tuning(setpoint_array,
 import numpy as np
 from typing import Dict
 
-def itae(time_s, sp, pv):
-    """Compute ITAE normalized by total duration."""
-    error = np.abs(np.array(sp) - np.array(pv))
-    t_rel = time_s - time_s[0]  # start at 0
-    # Normalize time so it runs from 0 → 1
-    t_norm = t_rel / (t_rel[-1] if t_rel[-1] != 0 else 1.0)
-    return np.trapz(t_norm * error, t_norm)  # trapezoidal integration
+def mean_step_itae(time_s, sp, pv, window_s=None):
+    """
+    Compute mean normalized ITAE across all setpoint steps.
+
+    Parameters
+    ----------
+    time_s : array
+        Time in seconds.
+    sp : array
+        Setpoint values.
+    pv : array
+        Process variable values.
+    window_s : float or None
+        Evaluation window length in seconds after each step.
+        If None, goes until next step change.
+    """
+    sp = np.array(sp)
+    pv = np.array(pv)
+    time_s = np.array(time_s)
+
+    # Detect step changes (where setpoint changes)
+    step_indices = np.where(np.diff(sp) != 0)[0] + 1
+    if len(step_indices) == 0:
+        return 0.0  # no steps → no ITAE
+
+    itae_values = []
+    for idx in step_indices:
+        # Step size
+        step_size = abs(sp[idx] - sp[idx - 1])
+        if step_size == 0:
+            continue
+
+        # Segment start/end
+        start_t = time_s[idx]
+        if window_s is not None:
+            end_t = start_t + window_s
+        else:
+            # Until next step or end
+            next_steps = step_indices[step_indices > idx]
+            end_t = time_s[next_steps[0]] if len(next_steps) > 0 else time_s[-1]
+
+        # Mask for the current segment
+        mask = (time_s >= start_t) & (time_s <= end_t)
+        seg_time = time_s[mask] - start_t  # relative time
+        seg_error = np.abs(sp[mask] - pv[mask])
+
+        # Normalize time to 0→1
+        if seg_time[-1] != 0:
+            t_norm = seg_time / seg_time[-1]
+        else:
+            t_norm = seg_time
+
+        # ITAE for this step (normalized by step size)
+        itae_val = np.trapz(t_norm * seg_error, t_norm) / step_size
+        itae_values.append(itae_val)
+
+    # Return mean across steps
+    return np.mean(itae_values) if itae_values else 0.0
 
 def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     """Analyze simulation results and calculate performance metrics."""
@@ -1051,13 +1102,8 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     background_loss = results['background_loss']
     time_minutes = results['time_minutes']
 
-    # Convert time to seconds for ITAE calculation
+    # Convert time to seconds
     time_s = np.array(time_minutes) * 60
-
-    # Step size for normalization (max - min of setpoint)
-    step_size = np.max(setpoint) - np.min(setpoint)
-    if step_size == 0:  # avoid division by zero
-        step_size = 1.0
 
     # Performance metrics
     error = temp - setpoint
@@ -1077,8 +1123,8 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     avg_background_loss = np.mean(background_loss)
     total_background_loss = np.sum(background_loss) * dt_hours / 1000
 
-    # Normalized ITAE (by time and step size)
-    itae_value = itae(time_s, setpoint, temp) / step_size
+    # Mean ITAE across all step changes
+    itae_value = mean_step_itae(time_s, setpoint, temp, window_s=None)
 
     return {
         'name': results['name'],
@@ -1089,8 +1135,7 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
         'energy': energy,
         'avg_background_loss': avg_background_loss,
         'total_background_loss': total_background_loss,
-        'itae': itae_value
-    }
+
 
 import matplotlib.ticker as ticker
 
