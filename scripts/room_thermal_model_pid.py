@@ -1135,6 +1135,8 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
         'energy': energy,
         'avg_background_loss': avg_background_loss,
         'total_background_loss': total_background_loss,
+        'itae': itae_value
+    }
 
 
 import matplotlib.ticker as ticker
