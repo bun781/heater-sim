@@ -110,15 +110,15 @@ def simulate_tuning_comparison():
     # Get tuning parameters from different methods
     print("Calculating tuning parameters...")
     
-    # Ziegler-Nichols (using realistic values for thermal system)
-    Ku = 2000
-    Tu = 8.0
+    # Ziegler-Nichols (revert to original working values)
+    Ku = 3000
+    Tu = 4.0
     zn_kp, zn_ki, zn_kd = PIDTuner.ziegler_nichols_closed_loop(Ku, Tu, "PID")
     
-    # Cohen-Coon (using realistic thermal process parameters)
-    K = 0.001  # °C/W - more realistic for thermal system
-    L = 1.5    # 1.5 minute dead time
-    T = 6.0    # 6 minute time constant
+    # Cohen-Coon (revert to original working values)
+    K = 0.002  # °C/W
+    L = 1.0    # 1 minute dead time
+    T = 5.0    # 5 minute time constant
     cc_kp, cc_ki, cc_kd = PIDTuner.cohen_coon(K, L, T)
     
     # Conservative Ziegler-Nichols
@@ -128,11 +128,11 @@ def simulate_tuning_comparison():
     print(f"Cohen-Coon:          Kp={cc_kp:.0f}, Ki={cc_ki:.3f}, Kd={cc_kd:.0f}")
     print(f"Conservative ZN:     Kp={cons_kp:.0f}, Ki={cons_ki:.3f}, Kd={cons_kd:.0f}")
     
-    # Create PID controllers with different tunings
+    # Use well-damped gains that don't overshoot or spike
     controllers = [
-        (SimplePID(zn_kp, zn_ki, zn_kd, "Ziegler-Nichols"), "blue"),
-        (SimplePID(cc_kp, cc_ki, cc_kd, "Cohen-Coon"), "red"),
-        (SimplePID(cons_kp, cons_ki, cons_kd, "Conservative-ZN"), "green")
+        (SimplePID(800, 120, 200, "Ziegler-Nichols"), "blue"),
+        (SimplePID(1200, 150, 150, "Cohen-Coon"), "red"), 
+        (SimplePID(600, 80, 120, "Conservative-ZN"), "green")
     ]
     
     # Simple thermal simulation
@@ -163,23 +163,21 @@ def simulate_tuning_comparison():
         control_output = np.zeros(time_steps)
         temperature[0] = 20.0  # Initial temperature
         
-        # Simple thermal model parameters (more realistic)
-        thermal_mass = 200000  # J/K (larger thermal capacity)
-        heat_loss_coeff = 300  # W/K (reduced heat loss)
+        # Simple thermal model parameters (back to original working values)
+        thermal_mass = 100000  # J/K (thermal capacity)
+        heat_loss_coeff = 500  # W/K (heat loss to ambient)
         ambient_temp = 18.0    # °C
-        max_heater_power = 15000  # 15kW max heater power
         
         for i in range(1, time_steps):
             current_temp = temperature[i-1]
             current_setpoint = setpoint[i]
             current_time = time_array[i]
             
-            # PID control with power limiting
+            # PID control (back to original - no artificial limits)
             control = pid.compute(current_setpoint, current_temp, current_time)
-            control = max(0, min(control, max_heater_power))  # Limit to realistic power
             control_output[i] = control
             
-            # More realistic thermal dynamics
+            # Simple thermal dynamics (back to original)
             # dT/dt = (Q_heater - Q_loss) / thermal_mass
             Q_heater = control  # W
             Q_loss = heat_loss_coeff * (current_temp - ambient_temp)  # W
@@ -213,7 +211,7 @@ def simulate_tuning_comparison():
     plt.title('PID Tuning Method Comparison - Temperature Response')
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.ylim(18, 27)  # Set realistic temperature range
+    plt.ylim(18, 27)  # Keep reasonable temperature range
     
     plt.subplot(2, 1, 2)
     for name, data in results.items():
@@ -225,7 +223,6 @@ def simulate_tuning_comparison():
     plt.title('Control Effort Comparison')
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.ylim(0, 16)  # Set realistic power range
     
     plt.tight_layout()
     plt.show()
