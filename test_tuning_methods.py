@@ -110,15 +110,15 @@ def simulate_tuning_comparison():
     # Get tuning parameters from different methods
     print("Calculating tuning parameters...")
     
-    # Ziegler-Nichols (using typical values for thermal system)
-    Ku = 3000
-    Tu = 4.0
+    # Ziegler-Nichols (using realistic values for thermal system)
+    Ku = 2000
+    Tu = 8.0
     zn_kp, zn_ki, zn_kd = PIDTuner.ziegler_nichols_closed_loop(Ku, Tu, "PID")
     
-    # Cohen-Coon (using typical thermal process parameters)
-    K = 0.002  # °C/W
-    L = 1.0    # 1 minute dead time
-    T = 5.0    # 5 minute time constant
+    # Cohen-Coon (using realistic thermal process parameters)
+    K = 0.001  # °C/W - more realistic for thermal system
+    L = 1.5    # 1.5 minute dead time
+    T = 6.0    # 6 minute time constant
     cc_kp, cc_ki, cc_kd = PIDTuner.cohen_coon(K, L, T)
     
     # Conservative Ziegler-Nichols
@@ -163,21 +163,23 @@ def simulate_tuning_comparison():
         control_output = np.zeros(time_steps)
         temperature[0] = 20.0  # Initial temperature
         
-        # Simple thermal model parameters
-        thermal_mass = 100000  # J/K (thermal capacity)
-        heat_loss_coeff = 500  # W/K (heat loss to ambient)
+        # Simple thermal model parameters (more realistic)
+        thermal_mass = 200000  # J/K (larger thermal capacity)
+        heat_loss_coeff = 300  # W/K (reduced heat loss)
         ambient_temp = 18.0    # °C
+        max_heater_power = 15000  # 15kW max heater power
         
         for i in range(1, time_steps):
             current_temp = temperature[i-1]
             current_setpoint = setpoint[i]
             current_time = time_array[i]
             
-            # PID control
+            # PID control with power limiting
             control = pid.compute(current_setpoint, current_temp, current_time)
+            control = max(0, min(control, max_heater_power))  # Limit to realistic power
             control_output[i] = control
             
-            # Simple thermal dynamics
+            # More realistic thermal dynamics
             # dT/dt = (Q_heater - Q_loss) / thermal_mass
             Q_heater = control  # W
             Q_loss = heat_loss_coeff * (current_temp - ambient_temp)  # W
@@ -211,6 +213,7 @@ def simulate_tuning_comparison():
     plt.title('PID Tuning Method Comparison - Temperature Response')
     plt.legend()
     plt.grid(True, alpha=0.3)
+    plt.ylim(18, 27)  # Set realistic temperature range
     
     plt.subplot(2, 1, 2)
     for name, data in results.items():
@@ -222,6 +225,7 @@ def simulate_tuning_comparison():
     plt.title('Control Effort Comparison')
     plt.legend()
     plt.grid(True, alpha=0.3)
+    plt.ylim(0, 16)  # Set realistic power range
     
     plt.tight_layout()
     plt.show()
@@ -241,7 +245,7 @@ def demonstrate_relay_tuning_concept():
     
     # Simulate relay response
     dt = 0.05  # Small time step for smooth oscillation
-    duration = 20
+    duration = 15
     time_steps = int(duration / dt)
     time_array = np.arange(0, duration, dt)
     
@@ -250,11 +254,11 @@ def demonstrate_relay_tuning_concept():
     control_output = np.zeros(time_steps)
     temperature[0] = 20.0
     setpoint = 22.0
-    relay_amplitude = 5000  # 5kW relay
+    relay_amplitude = 3000  # 3kW relay
     
-    # Thermal parameters
-    thermal_mass = 50000
-    heat_loss_coeff = 300
+    # More realistic thermal parameters
+    thermal_mass = 100000
+    heat_loss_coeff = 200
     ambient_temp = 18.0
     
     relay_state = 1  # Start positive
@@ -287,13 +291,14 @@ def demonstrate_relay_tuning_concept():
     
     # Analyze oscillation
     if len(switch_times) >= 4:
-        # Calculate period from switch times
+        # Calculate period from switch times (more robust)
         periods = []
-        for i in range(2, len(switch_times)-1, 2):
-            period = switch_times[i+2] - switch_times[i]
-            periods.append(period)
+        for i in range(0, len(switch_times)-2, 2):
+            if i+2 < len(switch_times):
+                period = switch_times[i+2] - switch_times[i]
+                periods.append(period)
         
-        Tu = np.mean(periods) if periods else 0
+        Tu = np.mean(periods) if periods else 4.0  # Default period
         
         # Calculate amplitude
         temp_max = np.max(temperature)
@@ -311,6 +316,14 @@ def demonstrate_relay_tuning_concept():
         # Calculate PID gains
         kp, ki, kd = PIDTuner.ziegler_nichols_closed_loop(Ku, Tu, "PID")
         print(f"  Calculated PID: Kp={kp:.0f}, Ki={ki:.3f}, Kd={kd:.0f}")
+    else:
+        print(f"Insufficient oscillation data (only {len(switch_times)} switches)")
+        print("Using default values for demonstration")
+        Tu = 4.0
+        oscillation_amplitude = 0.5
+        Ku = (4 * relay_amplitude) / (np.pi * oscillation_amplitude)
+        kp, ki, kd = PIDTuner.ziegler_nichols_closed_loop(Ku, Tu, "PID")
+        print(f"  Default PID: Kp={kp:.0f}, Ki={ki:.3f}, Kd={kd:.0f}")
     
     # Plot relay response
     plt.figure(figsize=(12, 8))
