@@ -96,8 +96,8 @@ def example_3_relay_auto_tuning():
     print(f"  Oscillation period: {oscillation_period} minutes")
     print(f"  Temperature amplitude: {temp_amplitude} °C")
     
-    # Calculate ultimate parameters
-    Ku, Tu = PIDTuner.relay_auto_tune(relay_amplitude, oscillation_period, temp_amplitude)
+    # Calculate ultimate parameters from relay data
+    Ku, Tu = PIDTuner.calculate_ultimate_from_relay(relay_amplitude, oscillation_period, temp_amplitude)
     
     print(f"\nCalculated ultimate parameters:")
     print(f"  Ultimate gain (Ku): {Ku:.0f}")

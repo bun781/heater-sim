@@ -402,6 +402,28 @@ class PIDTuner:
         return (kp, ki, kd)
     
     @staticmethod
+    def calculate_ultimate_from_relay(relay_amplitude: float, oscillation_period: float, 
+                                    temp_amplitude: float) -> tuple:
+        """
+        Calculate ultimate gain and period from relay test data
+        
+        Args:
+            relay_amplitude: Amplitude of relay signal (W)
+            oscillation_period: Period of oscillation (minutes)
+            temp_amplitude: Amplitude of temperature oscillation (°C)
+            
+        Returns:
+            tuple: (Ku, Tu) ultimate gain and period
+        """
+        import math
+        
+        # Calculate ultimate gain using relay method
+        Ku = (4 * relay_amplitude) / (math.pi * temp_amplitude)
+        Tu = oscillation_period
+        
+        return (Ku, Tu)
+    
+    @staticmethod
     def relay_auto_tune(pid_controller, setpoint: float, measurement_func, 
                        control_func, relay_amplitude: float = 10.0, 
                        max_cycles: int = 20, dt: float = 0.1) -> tuple:
