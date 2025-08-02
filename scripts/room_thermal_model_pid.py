@@ -68,9 +68,9 @@ def get_env_float(env_var: str, default_value: float) -> float:
 # ============================================================================
 
 # Load arrays from environment variables
-SETPOINT_ARRAY = get_env_array('SETPOINT_ARRAY', [22.0, 22.0, 23.0, 25.0, 24.0, 24.0, 20.0, 20.0, 26.0, 26.0, 21.0, 21.0, 23.0])
-AMBIENT_ARRAY = get_env_array('AMBIENT_ARRAY', [25.0, 23.0, 27.0, 22.0, 28.0, 24.0, 26.0, 25.0, 29.0, 21.0, 27.0, 23.0, 25.0])
-BACKGROUND_LOSS_ARRAY = get_env_array('BACKGROUND_LOSS_ARRAY', [30000])
+SETPOINT_ARRAY = get_env_array('SETPOINT_ARRAY', [27.0, 26.5, 26.0, 25.0, 24.5, 23.5, 23.0, 23.5, 24.5, 25.0, 26.0, 26.5, 27.0])
+AMBIENT_ARRAY = get_env_array('AMBIENT_ARRAY', [-5, -4, -3, -2, 0, 1, 3, 4, 5, 7, 8, 9, 10, 9, 8, 7, 5, 4, 3, 1, 0, -2, -3, -4, -5])
+BACKGROUND_LOSS_ARRAY = get_env_array('BACKGROUND_LOSS_ARRAY', [0])
 
 # Load simulation parameters
 DURATION_HOURS = get_env_float('DURATION_HOURS', 25.0)
@@ -78,28 +78,20 @@ TIME_STEP_MINUTES = get_env_float('TIME_STEP_MINUTES', 0.5)
 
 # Load room physical properties
 ROOM_VOLUME = get_env_float('ROOM_VOLUME', 140.0)
-COOLING_COEFFICIENT = get_env_float('COOLING_COEFFICIENT', 0.02)
+COOLING_COEFFICIENT = get_env_float('COOLING_COEFFICIENT', 0.002)
 THERMAL_CAPACITY_PER_M3 = get_env_float('THERMAL_CAPACITY_PER_M3', 1900.0)
 HEATER_EFFICIENCY = get_env_float('HEATER_EFFICIENCY', 0.95)
-
-# Load PID controller settings
-CONSERVATIVE_KP = get_env_float('CONSERVATIVE_KP', 1500)
-CONSERVATIVE_KI = get_env_float('CONSERVATIVE_KI', 200)
-CONSERVATIVE_KD = get_env_float('CONSERVATIVE_KD', 400)
-
-STANDARD_KP = get_env_float('STANDARD_KP', 2500)
-STANDARD_KI = get_env_float('STANDARD_KI', 350)
-STANDARD_KD = get_env_float('STANDARD_KD', 700)
-
-AGGRESSIVE_KP = get_env_float('AGGRESSIVE_KP', 3500)
-AGGRESSIVE_KI = get_env_float('AGGRESSIVE_KI', 500)
-AGGRESSIVE_KD = get_env_float('AGGRESSIVE_KD', 1000)
 
 # Load control system settings
 OUTPUT_MIN = get_env_float('OUTPUT_MIN', 0.0)
 OUTPUT_MAX = get_env_float('OUTPUT_MAX', 100000.0)
 CONTROL_LAG_MINUTES = get_env_float('CONTROL_LAG_MINUTES', 0)
 NOISE_STD = get_env_float('NOISE_STD', 50.0)
+
+# Placeholder values
+STANDARD_KP = get_env_float('STANDARD_KP', 2500)
+STANDARD_KI = get_env_float('STANDARD_KI', 350)
+STANDARD_KD = get_env_float('STANDARD_KD', 700)
 
 # ============================================================================
 
@@ -898,7 +890,7 @@ def run_simulation_with_ziegler_tuning(setpoint_array,
     """Perform ZN tuning, then run the full simulation and return results."""
 
     # --- Perform ZN tuning ---
-    def short_test(pid, kp, hours=2.0):
+    def short_test(pid, kp, hours=4.0):
         pid.reset()
         pid.set_tunings(kp, 0, 0)
         sim = ThermalSimulation()
@@ -956,6 +948,88 @@ def run_simulation_with_ziegler_tuning(setpoint_array,
         duration_hours,
         dt_minutes
     )
+
+def run_simulation_with_cohen_coon_tuning(setpoint_array,
+                                          ambient_array,
+                                          background_loss_array,
+                                          pid_controller,
+                                          duration_hours=None,
+                                          dt_minutes=None):
+    """Perform Cohen–Coon tuning, then run the full simulation and return results."""
+
+    # --- Perform Cohen–Coon tuning ---
+    def step_test(pid, hours=3.0):
+        """Run short open-loop step test with background loss."""
+        pid.reset()
+        pid.set_tunings(0, 0, 0)  # Open loop (PID output fixed)
+        sim = ThermalSimulation()
+        sim.set_background_loss_array(background_loss_array)  # ✅ so it's not None
+        sim.reset()
+
+        setpoint, ambient = 20, 18
+        control_output = OUTPUT_MAX # Use max output for clear step response
+        temps, times = [], []
+
+        for t in np.arange(0, hours * 60, TIME_STEP_MINUTES):
+            sim.step(setpoint, ambient, control_output, TIME_STEP_MINUTES)
+            temps.append(sim.get_current_temperature())
+            times.append(t)
+
+        return np.array(times), np.array(temps), control_output
+
+    def estimate_parameters(times, temps, step_power):
+        """Estimate K, tau, L from temperature curve."""
+        delta_temp = temps[-1] - temps[0]
+        K = delta_temp / step_power  # process gain
+
+        steady_state_temp = temps[-1]
+        target_63 = temps[0] + 0.632 * (steady_state_temp - temps[0])
+
+        idx_tau = np.where(temps >= target_63)[0][0]
+        tau_time = times[idx_tau]
+
+        idx_L = np.where(temps > temps[0] + 0.05 * delta_temp)[0][0]
+        L_time = times[idx_L]
+
+        tau = (tau_time - L_time) / 60.0  # min → hr
+        L = L_time / 60.0  # min → hr
+        return K, tau, L
+
+    def apply_cohen_coon(pid, K, tau, L):
+        """Apply Cohen–Coon tuning formulas."""
+        if L <= 0:
+            raise ValueError("Invalid dead time (L) detected.")
+
+        # PID form
+        Kp = (1 / K) * ((4 / 3) * (tau / L) + 0.25)
+        Ki_hr = Kp / tau
+        Kd_hr = Kp * (L / 4.0)
+
+        # Convert to per-minute units for your simulation
+        Ki = Ki_hr / 60.0
+        Kd = Kd_hr * 60.0
+
+        pid.set_tunings(Kp, Ki, Kd)
+        print(f"[Cohen–Coon] Applied: Kp={Kp:.4f}, Ki={Ki:.6f}, Kd={Kd:.4f}")
+
+    print("\n🚀 Running Simulation with Cohen–Coon Tuning...")
+    print("🎯 Running Cohen–Coon tuning...")
+    times, temps, step_power = step_test(pid_controller)
+    K, tau, L = estimate_parameters(times, temps, step_power)
+    print(f"[Cohen–Coon] Estimated: K={K:.6f}, τ={tau:.3f} hr, L={L:.3f} hr")
+    apply_cohen_coon(pid_controller, K, tau, L)
+    print("✅ Cohen–Coon tuning complete\n")
+
+    # --- Now run your normal simulation ---
+    return run_simulation(
+        setpoint_array,
+        ambient_array,
+        background_loss_array,
+        pid_controller,
+        duration_hours,
+        dt_minutes
+    )
+
 
 def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     """Analyze simulation results"""
@@ -1119,10 +1193,6 @@ def print_env_config():
     print(f"   • Cooling Coefficient: {COOLING_COEFFICIENT}")
     print(f"   • Thermal Capacity: {THERMAL_CAPACITY_PER_M3} J/K/m³")
     print(f"   • Heater Efficiency: {HEATER_EFFICIENCY}")
-    print(f"   • Conservative PID: Kp={CONSERVATIVE_KP}, Ki={CONSERVATIVE_KI}, Kd={CONSERVATIVE_KD}")
-    print(f"   • Standard PID: Kp={STANDARD_KP}, Ki={STANDARD_KI}, Kd={STANDARD_KD}")
-    print(f"   • Aggressive PID: Kp={AGGRESSIVE_KP}, Ki={AGGRESSIVE_KI}, Kd={AGGRESSIVE_KD}")
-
 
 def main():
     """Main simulation with environment variable configuration"""
@@ -1158,9 +1228,10 @@ def main():
     # Print current configuration
     print_env_config()
 
-    # Create PID controllers
+    # Create PID controllers for tuned runs
     controllers = [
-        SimplePID(kp=STANDARD_KP, ki=STANDARD_KI, kd=STANDARD_KD, name="Ziegler–Nichols Tuned")
+        SimplePID(kp=STANDARD_KP, ki=STANDARD_KI, kd=STANDARD_KD, name="Ziegler–Nichols Tuned"),
+        SimplePID(kp=STANDARD_KP, ki=STANDARD_KI, kd=STANDARD_KD, name="Cohen–Coon Tuned")
     ]
 
     print(f"\n🔥 Environment Variable Features:")
@@ -1178,7 +1249,18 @@ def main():
     for controller in controllers:
         try:
             if controller.name == "Ziegler–Nichols Tuned":
+                print("\n🚀 Running Simulation with Ziegler–Nichols Tuning...")
                 results = run_simulation_with_ziegler_tuning(
+                    SETPOINT_ARRAY,
+                    AMBIENT_ARRAY,
+                    BACKGROUND_LOSS_ARRAY,
+                    controller,
+                    DURATION_HOURS,
+                    TIME_STEP_MINUTES
+                )
+            elif controller.name == "Cohen–Coon Tuned":
+                print("\n🚀 Running Simulation with Cohen–Coon Tuning...")
+                results = run_simulation_with_cohen_coon_tuning(
                     SETPOINT_ARRAY,
                     AMBIENT_ARRAY,
                     BACKGROUND_LOSS_ARRAY,
@@ -1223,7 +1305,6 @@ def main():
     print(f"   • TRUE discrete setpoints (perfect step changes)")
     print(f"   • Comma-separated array format")
     print(f"   • Modular PID-Simulation interaction")
-
 
 if __name__ == "__main__":
     try:
