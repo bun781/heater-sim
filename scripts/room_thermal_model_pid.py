@@ -636,42 +636,50 @@ class ArrayBackgroundLoss:
         """Reset to initial state"""
         pass
 
+import numpy as np
+
 class ThermalSimulation:
     """
     Room thermal simulation using Newton's Law of Cooling
-    Simplified version without environmental conditions
+    Supports constant or time-varying cooling coefficient.
     """
-    
-    def __init__(self, room_volume: float = None, 
-                 cooling_coefficient: float = None,
+
+    def __init__(self, room_volume: float = None,
+                 cooling_coefficient=None,
                  thermal_capacity_per_m3: float = None,
                  heater_efficiency: float = None):
         """
-        Initialize thermal simulation with environment variable defaults
-        
+        Initialize thermal simulation.
+
         Args:
             room_volume: Room volume in m³
-            cooling_coefficient: Newton's cooling coefficient (1/min)
+            cooling_coefficient: Newton's cooling coefficient (1/min) or array per timestep
             thermal_capacity_per_m3: Thermal capacity per m³ (J/K/m³)
             heater_efficiency: HVAC heater efficiency (0-1)
         """
         self.room_volume = room_volume if room_volume is not None else ROOM_VOLUME
-        self.cooling_coefficient = cooling_coefficient if cooling_coefficient is not None else COOLING_COEFFICIENT
+
+        # Cooling coefficient can be constant or array
+        if cooling_coefficient is None:
+            cooling_coefficient = COOLING_COEFFICIENT  # default constant from env
+        self.cooling_coefficient = cooling_coefficient
+
         thermal_cap_per_m3 = thermal_capacity_per_m3 if thermal_capacity_per_m3 is not None else THERMAL_CAPACITY_PER_M3
         self.thermal_capacity = self.room_volume * thermal_cap_per_m3
+
         self.heater_efficiency = heater_efficiency if heater_efficiency is not None else HEATER_EFFICIENCY
-        
+
         # Current state
         self.current_temperature = 20.0  # Start at 20°C
         self.current_time = 0.0
-        
-        # Background loss model (will be set later)
+
+        # Background loss model
         self.background_loss = None
-        
+
         # Control lag simulation
         self.control_history = []
         self.lag_minutes = CONTROL_LAG_MINUTES
-        
+
     def reset(self, initial_temperature: float = 20.0):
         """Reset simulation to initial state"""
         self.current_temperature = initial_temperature
@@ -679,79 +687,87 @@ class ThermalSimulation:
         self.control_history = []
         if self.background_loss:
             self.background_loss.reset()
-    
+
     def set_background_loss_array(self, loss_array: np.ndarray):
         """Set background heat loss array"""
         self.background_loss = ArrayBackgroundLoss(loss_array)
-    
+
     def step(self, setpoint: float, ambient_temp: float,
              control_input: float, dt: float = None) -> float:
         """
-        Perform one simulation time step
-        
+        Perform one simulation time step.
+
         Args:
             setpoint: Current setpoint temperature (°C)
             ambient_temp: Current ambient temperature (°C)
             control_input: HVAC control input from PID (W)
             dt: Time step (minutes)
-            
+
         Returns:
             New room temperature (°C)
         """
-        
         if dt is None:
             dt = TIME_STEP_MINUTES
-        
+
         # Apply control lag
         self.control_history.append((self.current_time, control_input))
         if len(self.control_history) > int(self.lag_minutes / dt * 2):
             self.control_history.pop(0)
-        
+
         # Get lagged control value
         lag_time = self.current_time - self.lag_minutes
         actual_control = self._get_lagged_control(lag_time, control_input)
-        
-        # Calculate heat flows (simplified - no solar or internal gains)
+
+        # Heat from HVAC
         Q_hvac = actual_control * self.heater_efficiency
-        
+
+        # Background loss
         time_index = int(self.current_time / dt)
-        Q_background_loss = -self.background_loss.get_heat_loss(time_index)
-        
+        Q_background_loss = -self.background_loss.get_heat_loss(time_index) if self.background_loss else 0.0
+
+        # Select cooling coefficient for this timestep
+        if isinstance(self.cooling_coefficient, (list, np.ndarray)):
+            if time_index < len(self.cooling_coefficient):
+                current_cooling_coeff = self.cooling_coefficient[time_index]
+            else:
+                current_cooling_coeff = self.cooling_coefficient[-1]
+        else:
+            current_cooling_coeff = self.cooling_coefficient
+
         # Total heat input
         Q_total = Q_hvac + Q_background_loss
-        
-        # Newton's Law of Cooling: dT/dt = -k(T - T_ambient) + Q/C
-        dT_dt = (-self.cooling_coefficient * (self.current_temperature - ambient_temp) + 
-                Q_total / self.thermal_capacity)
-        
-        # Update temperature and time
+
+        # Newton's Law of Cooling
+        dT_dt = (-current_cooling_coeff * (self.current_temperature - ambient_temp) +
+                 Q_total / self.thermal_capacity)
+
+        # Update state
         self.current_temperature += dT_dt * dt
         self.current_time += dt
-        
+
         return self.current_temperature
-    
+
     def _get_lagged_control(self, lag_time: float, default_control: float) -> float:
         """Get control value with lag applied"""
         if not self.control_history or lag_time <= self.control_history[0][0]:
             return default_control
-        
+
         # Linear interpolation
         for i in range(len(self.control_history) - 1):
             t1, c1 = self.control_history[i]
             t2, c2 = self.control_history[i + 1]
-            
             if t1 <= lag_time <= t2:
                 if t2 == t1:
                     return c1
                 alpha = (lag_time - t1) / (t2 - t1)
                 return c1 + alpha * (c2 - c1)
-        
+
         return self.control_history[-1][1]
-    
+
     def get_current_temperature(self) -> float:
         """Get current room temperature"""
         return self.current_temperature
-    
+
     def get_current_time(self) -> float:
         """Get current simulation time"""
         return self.current_time
@@ -760,32 +776,32 @@ def create_discrete_profile(array: np.ndarray, total_time_steps: int) -> np.ndar
     """
     Create TRUE discrete profile - each array value held constant for equal time periods
     NO interpolation - creates step changes
-    
+
     Args:
         array: Input array with discrete values
         total_time_steps: Total number of time steps needed
-        
+
     Returns:
         Discrete step profile
     """
     if len(array) == 0:
         return np.zeros(total_time_steps)
-    
+
     # Calculate how many time steps each value should be held
     steps_per_value = total_time_steps // len(array)
     remainder = total_time_steps % len(array)
-    
+
     # Create discrete profile
     discrete_profile = []
-    
+
     for i, value in enumerate(array):
         # Each value gets equal time, with remainder distributed to first values
         hold_steps = steps_per_value + (1 if i < remainder else 0)
         discrete_profile.extend([value] * hold_steps)
-    
+
     return np.array(discrete_profile[:total_time_steps])
 
-def run_simulation(setpoint_array: np.ndarray, 
+def run_simulation(setpoint_array: np.ndarray,
                   ambient_array: np.ndarray,
                   background_loss_array: np.ndarray,
                   pid_controller: SimplePID,
@@ -793,7 +809,7 @@ def run_simulation(setpoint_array: np.ndarray,
                   dt_minutes: float = None) -> Dict[str, np.ndarray]:
     """
     Run complete simulation with TRUE discrete setpoints
-    
+
     Args:
         setpoint_array: Array of DISCRETE setpoint temperatures (°C)
         ambient_array: Array of ambient temperatures (°C)
@@ -801,47 +817,47 @@ def run_simulation(setpoint_array: np.ndarray,
         pid_controller: PID controller instance
         duration_hours: Total simulation duration (hours)
         dt_minutes: Time step (minutes)
-        
+
     Returns:
         Dictionary containing simulation results
     """
-    
+
     # Use environment variables for defaults
     if duration_hours is None:
         duration_hours = DURATION_HOURS
     if dt_minutes is None:
         dt_minutes = TIME_STEP_MINUTES
-    
+
     print(f"🔄 Running simulation: {pid_controller.name} PID")
     print(f"   Duration: {duration_hours} hours, Time step: {dt_minutes} minutes")
-    
+
     # Time setup
     time_steps = int(duration_hours * 60 / dt_minutes)
     time_minutes = np.arange(0, duration_hours * 60, dt_minutes)
     time_hours = time_minutes / 60
-    
+
     # Create TRUE discrete profiles (step changes, no interpolation)
     setpoints = create_discrete_profile(setpoint_array, time_steps)
     ambient_temps = create_discrete_profile(ambient_array, time_steps)
     background_losses_base = create_discrete_profile(background_loss_array, time_steps)
-    
+
     print(f"   Created discrete profiles: {len(setpoint_array)} → {time_steps} points")
     print(f"   Discrete setpoint values: {np.unique(setpoints)} °C")
     print(f"   Steps per setpoint: ~{time_steps // len(setpoint_array)} time steps")
-    
+
     # Initialize simulation and controller
     simulation = ThermalSimulation()
     simulation.set_background_loss_array(background_losses_base)
     simulation.reset()
     pid_controller.reset()
-    
+
     # Storage arrays
     temperatures = np.zeros(time_steps)
     control_outputs = np.zeros(time_steps)
     background_losses = np.zeros(time_steps)
-    
+
     temperatures[0] = simulation.get_current_temperature()
-    
+
     # Main simulation loop - PID-Simulation interaction
     for i in range(1, time_steps):
         # Current conditions
@@ -849,14 +865,14 @@ def run_simulation(setpoint_array: np.ndarray,
         current_setpoint = setpoints[i]  # TRUE DISCRETE value (step change)
         current_ambient = ambient_temps[i]
         current_time = time_minutes[i]
-        
+
         # PID computes control output based on current temperature
         control_output = pid_controller.compute(current_setpoint, current_temp, current_time)
         control_outputs[i] = control_output
-        
+
         # Get background loss for logging
         background_losses[i] = simulation.background_loss.get_heat_loss(i)
-        
+
         # Simulation takes control output and returns new temperature
         new_temp = simulation.step(
             setpoint=current_setpoint,
@@ -864,11 +880,11 @@ def run_simulation(setpoint_array: np.ndarray,
             control_input=control_output,
             dt=dt_minutes
         )
-        
+
         temperatures[i] = new_temp
-    
+
     print(f"   ✅ Simulation completed: {time_steps} time steps")
-    
+
     return {
         'name': pid_controller.name,
         'time_minutes': time_minutes,
