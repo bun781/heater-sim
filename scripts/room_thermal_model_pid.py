@@ -69,6 +69,7 @@ def get_env_float(env_var: str, default_value: float) -> float:
 
 # Load arrays from environment variables
 SETPOINT_ARRAY = get_env_array('SETPOINT_ARRAY', [27.0, 26.5, 26.0, 25.0, 24.5, 23.5, 23.0, 23.5, 24.5, 25.0, 26.0, 26.5, 27.0])
+# SETPOINT_ARRAY = get_env_array('SETPOINT_ARRAY', [24])
 AMBIENT_ARRAY = get_env_array('AMBIENT_ARRAY', [-5, -4, -3, -2, 0, 1, 3, 4, 5, 7, 8, 9, 10, 9, 8, 7, 5, 4, 3, 1, 0, -2, -3, -4, -5])
 BACKGROUND_LOSS_ARRAY = get_env_array('BACKGROUND_LOSS_ARRAY', [0])
 
@@ -1067,76 +1068,96 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
         'total_background_loss': total_background_loss
     }
 
+
+import matplotlib.ticker as ticker
+
+
 def create_plots(all_results: Dict[str, Dict[str, np.ndarray]]):
-    """Create simplified plots without environmental conditions"""
-    
+    """Create plots with a separate ambient temperature subplot"""
+
     print("📊 Creating analysis plots...")
-    
+
     try:
-        fig, axes = plt.subplots(4, 1, figsize=(15, 16))
+        fig, axes = plt.subplots(5, 1, figsize=(15, 18))  # Now 5 plots
         colors = ['blue', 'red', 'green', 'purple', 'orange']
-        
+
         # Get reference data
         ref_results = list(all_results.values())[0]
         time_hours = ref_results['time_hours']
-        
-        # Plot 1: Temperature tracking with TRUE discrete setpoints
+
+        # Tick settings
+        major_tick_spacing = 1.0  # hours
+        minor_tick_spacing = 0.5  # hours
+
+        # --- Plot 1: Temperature tracking ---
         for i, (name, results) in enumerate(all_results.items()):
-            axes[0].plot(time_hours, results['temperature'], 
-                        color=colors[i % len(colors)], linewidth=2, 
-                        label=f'{name} PID', alpha=0.8)
-        
-        axes[0].plot(time_hours, ref_results['setpoint'], 'k-', 
-                    linewidth=4, label='Discrete Setpoint (Step Changes)', alpha=0.9)
+            axes[0].plot(time_hours, results['temperature'],
+                         color=colors[i % len(colors)], linewidth=2,
+                         label=f'{name} PID', alpha=0.8)
+
+        axes[0].plot(time_hours, ref_results['setpoint'], 'k-',
+                     linewidth=2, label='Setpoint (Discrete)', alpha=0.9, dashes=(1, 1))
         axes[0].set_ylabel('Temperature (°C)', fontsize=12)
-        axes[0].set_title('Room Temperature Control with TRUE Discrete Setpoints', fontsize=14)
+        axes[0].set_title('Room Temperature vs Setpoint', fontsize=14)
         axes[0].legend(fontsize=11)
         axes[0].grid(True, alpha=0.3)
-        
-        # Plot 2: Control effort
-        for i, (name, results) in enumerate(all_results.items()):
-            axes[1].plot(time_hours, results['control'] / 1000,
-                        color=colors[i % len(colors)], linewidth=2, 
-                        label=f'{name} PID', alpha=0.8)
-        
-        axes[1].set_ylabel('Heater Power (kW)', fontsize=12)
-        axes[1].set_title('HVAC Control Effort', fontsize=14)
+
+        # --- Plot 2: Ambient temperature ---
+        axes[1].plot(time_hours, ref_results['ambient'], color='orange',
+                     linewidth=2, alpha=0.8, label='Ambient Temperature')
+        axes[1].set_ylabel('Ambient (°C)', fontsize=12)
+        axes[1].set_title('Ambient Temperature Profile', fontsize=14)
         axes[1].legend(fontsize=11)
         axes[1].grid(True, alpha=0.3)
-        
-        # Plot 3: Background heat loss (from array)
-        background_loss_kw = ref_results['background_loss'] / 1000
-        axes[2].plot(time_hours, background_loss_kw, 'purple', linewidth=2, 
-                    label='Array Background Loss', alpha=0.8)
-        
-        mean_loss = np.mean(background_loss_kw)
-        axes[2].axhline(y=mean_loss, color='purple', linestyle='--', alpha=0.6, 
-                       label=f'Mean: {mean_loss:.1f}kW')
-        
-        axes[2].set_ylabel('Heat Loss (kW)', fontsize=12)
-        axes[2].set_title('User-Defined Background Heat Loss Array', fontsize=14)
+
+        # --- Plot 3: Control effort ---
+        for i, (name, results) in enumerate(all_results.items()):
+            axes[2].plot(time_hours, results['control'] / 1000,
+                         color=colors[i % len(colors)], linewidth=2,
+                         label=f'{name} PID', alpha=0.8)
+        axes[2].set_ylabel('Heater Power (kW)', fontsize=12)
+        axes[2].set_title('HVAC Control Effort', fontsize=14)
         axes[2].legend(fontsize=11)
         axes[2].grid(True, alpha=0.3)
-        
-        # Plot 4: Error analysis
-        for i, (name, results) in enumerate(all_results.items()):
-            error = results['temperature'] - results['setpoint']
-            axes[3].plot(time_hours, error, color=colors[i % len(colors)], 
-                        linewidth=2, label=f'{name} Error', alpha=0.8)
-        
-        axes[3].axhline(y=1.0, color='red', linestyle=':', alpha=0.5, label='Comfort Bounds')
-        axes[3].axhline(y=-1.0, color='red', linestyle=':', alpha=0.5)
-        axes[3].set_xlabel('Time (hours)', fontsize=12)
-        axes[3].set_ylabel('Temperature Error (°C)', fontsize=12)
-        axes[3].set_title('Temperature Tracking Error', fontsize=14)
+
+        # --- Plot 4: Background heat loss ---
+        background_loss_kw = ref_results['background_loss'] / 1000
+        axes[3].plot(time_hours, background_loss_kw, 'purple', linewidth=2,
+                     label='Array Background Loss', alpha=0.8)
+        mean_loss = np.mean(background_loss_kw)
+        axes[3].axhline(y=mean_loss, color='purple', linestyle='--', alpha=0.6,
+                        label=f'Mean: {mean_loss:.1f}kW')
+        axes[3].set_ylabel('Heat Loss (kW)', fontsize=12)
+        axes[3].set_title('Background Heat Loss Array', fontsize=14)
         axes[3].legend(fontsize=11)
         axes[3].grid(True, alpha=0.3)
-        
+
+        # --- Plot 5: Error analysis ---
+        for i, (name, results) in enumerate(all_results.items()):
+            error = results['temperature'] - results['setpoint']
+            axes[4].plot(time_hours, error, color=colors[i % len(colors)],
+                         linewidth=2, label=f'{name} Error', alpha=0.8)
+        axes[4].axhline(y=1.0, color='red', linestyle=':', alpha=0.5, label='Comfort Bounds')
+        axes[4].axhline(y=-1.0, color='red', linestyle=':', alpha=0.5)
+        axes[4].set_xlabel('Time (hours)', fontsize=12)
+        axes[4].set_ylabel('Temp Error (°C)', fontsize=12)
+        axes[4].set_title('Temperature Tracking Error', fontsize=14)
+        axes[4].legend(fontsize=11)
+        axes[4].grid(True, alpha=0.3)
+
+        # --- Apply ticks to all plots ---
+        for ax in axes:
+            ax.set_xlim(0, 25)
+            ax.xaxis.set_major_locator(ticker.MultipleLocator(major_tick_spacing))
+            ax.xaxis.set_minor_locator(ticker.MultipleLocator(minor_tick_spacing))
+            ax.grid(which='minor', color='gray', alpha=0.2, linestyle='--')
+
         plt.tight_layout()
         plt.show()
-        
+
     except Exception as e:
         print(f"❌ Error creating plots: {e}")
+
 
 def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str, float]):
     """Print comprehensive results"""
