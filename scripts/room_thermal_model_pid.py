@@ -1032,31 +1032,54 @@ def run_simulation_with_cohen_coon_tuning(setpoint_array,
     )
 
 
+import numpy as np
+from typing import Dict
+
+def itae(time_s, sp, pv):
+    """Compute ITAE normalized by total duration."""
+    error = np.abs(np.array(sp) - np.array(pv))
+    t_rel = time_s - time_s[0]  # start at 0
+    # Normalize time so it runs from 0 → 1
+    t_norm = t_rel / (t_rel[-1] if t_rel[-1] != 0 else 1.0)
+    return np.trapz(t_norm * error, t_norm)  # trapezoidal integration
+
 def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
-    """Analyze simulation results"""
+    """Analyze simulation results and calculate performance metrics."""
     temp = results['temperature']
     setpoint = results['setpoint']
     control = results['control']
     background_loss = results['background_loss']
-    
+    time_minutes = results['time_minutes']
+
+    # Convert time to seconds for ITAE calculation
+    time_s = np.array(time_minutes) * 60
+
+    # Step size for normalization (max - min of setpoint)
+    step_size = np.max(setpoint) - np.min(setpoint)
+    if step_size == 0:  # avoid division by zero
+        step_size = 1.0
+
     # Performance metrics
     error = temp - setpoint
     mae = np.mean(np.abs(error))
-    rmse = np.sqrt(np.mean(error**2))
+    rmse = np.sqrt(np.mean(error ** 2))
     max_error = np.max(np.abs(error))
-    
+
     # Comfort analysis
     comfort_violations = np.sum(np.abs(error) > 1.0)
     comfort_percent = (1 - comfort_violations / len(error)) * 100
-    
+
     # Energy consumption (convert to kWh)
-    dt_hours = (results['time_minutes'][1] - results['time_minutes'][0]) / 60
+    dt_hours = (time_minutes[1] - time_minutes[0]) / 60
     energy = np.sum(np.abs(control)) * dt_hours / 1000
-    
+
     # Background loss analysis
     avg_background_loss = np.mean(background_loss)
     total_background_loss = np.sum(background_loss) * dt_hours / 1000
-    
+
+    # Normalized ITAE (by time and step size)
+    itae_value = itae(time_s, setpoint, temp) / step_size
+
     return {
         'name': results['name'],
         'mae': mae,
@@ -1065,9 +1088,9 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
         'comfort_percent': comfort_percent,
         'energy': energy,
         'avg_background_loss': avg_background_loss,
-        'total_background_loss': total_background_loss
+        'total_background_loss': total_background_loss,
+        'itae': itae_value
     }
-
 
 import matplotlib.ticker as ticker
 
@@ -1160,47 +1183,54 @@ def create_plots(all_results: Dict[str, Dict[str, np.ndarray]]):
 
 
 def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str, float]):
-    """Print comprehensive results"""
-    
-    print("\n" + "="*100)
+    """Print comprehensive results including normalized ITAE"""
+
+    print("\n" + "=" * 110)
     print("ENVIRONMENT VARIABLE CONFIGURED ROOM THERMAL SIMULATION")
     print("TRUE DISCRETE SETPOINTS & ARRAY BACKGROUND LOSS FROM .ENV FILES")
-    print("="*100)
-    print(f"Room Volume: {room_info['volume']:.0f} m³, Thermal Capacity: {room_info['thermal_capacity']/1000:.0f} kJ/K")
-    print("-"*100)
-    print(f"{'Controller':<15} {'MAE(°C)':<8} {'RMSE(°C)':<9} {'Max Err':<8} {'Comfort%':<9} {'Energy(kWh)':<12} {'Avg Loss(kW)':<12} {'Loss(kWh)':<10}")
-    print("-"*100)
-    
+    print("=" * 110)
+    print(
+        f"Room Volume: {room_info['volume']:.0f} m³, Thermal Capacity: {room_info['thermal_capacity'] / 1000:.0f} kJ/K")
+    print("-" * 110)
+
+    # Added ITAE column to header
+    print(f"{'Controller':<22} {'MAE(°C)':<8} {'RMSE(°C)':<9} {'Max Err':<8} "
+          f"{'Comfort%':<9} {'Energy(kWh)':<12} {'Avg Loss(kW)':<12} {'Loss(kWh)':<10} {'ITAE(norm)':<11}")
+    print("-" * 110)
+
     for data in performance_data:
-        print(f"{data['name']:<15} {data['mae']:<8.3f} {data['rmse']:<9.3f} "
+        print(f"{data['name']:<22} {data['mae']:<8.3f} {data['rmse']:<9.3f} "
               f"{data['max_error']:<8.3f} {data['comfort_percent']:<9.1f} "
-              f"{data['energy']:<12.2f} {data['avg_background_loss']/1000:<12.2f} "
-              f"{data['total_background_loss']:<10.2f}")
-    
-    print("="*100)
-    
+              f"{data['energy']:<12.2f} {data['avg_background_loss'] / 1000:<12.2f} "
+              f"{data['total_background_loss']:<10.2f} {data['itae']:<11.3f}")
+
+    print("=" * 110)
+
     # Analysis
     avg_loss = np.mean([data['avg_background_loss'] for data in performance_data])
     total_loss = np.mean([data['total_background_loss'] for data in performance_data])
     avg_energy = np.mean([data['energy'] for data in performance_data])
-    
+
     print(f"\n🔥 ENVIRONMENT VARIABLE CONFIGURATION:")
     print(f"• Configuration: Loaded from .env file")
     print(f"• Arrays: Comma-separated values in environment variables")
-    print(f"• Average background loss: {avg_loss/1000:.2f} kW")
+    print(f"• Average background loss: {avg_loss / 1000:.2f} kW")
     print(f"• Total background loss energy: {total_loss:.2f} kWh")
-    print(f"• Background vs HVAC energy: {total_loss/avg_energy*100:.1f}%")
+    print(f"• Background vs HVAC energy: {total_loss / avg_energy * 100:.1f}%")
     print(f"• Flexible: Modify .env file to change all parameters")
-    
+
     # Best performers
     best_accuracy = min(performance_data, key=lambda x: x['mae'])
     best_comfort = max(performance_data, key=lambda x: x['comfort_percent'])
     best_energy = min(performance_data, key=lambda x: x['energy'])
-    
+    best_itae = min(performance_data, key=lambda x: x['itae'])
+
     print(f"\n🏆 BEST PERFORMERS:")
     print(f"Most Accurate: {best_accuracy['name']} (MAE: {best_accuracy['mae']:.3f}°C)")
     print(f"Best Comfort: {best_comfort['name']} ({best_comfort['comfort_percent']:.1f}%)")
     print(f"Most Efficient: {best_energy['name']} ({best_energy['energy']:.2f} kWh)")
+    print(f"Lowest ITAE: {best_itae['name']} (ITAE(norm): {best_itae['itae']:.3f})")
+
 
 def print_env_config():
     """Print current environment variable configuration"""
