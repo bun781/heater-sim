@@ -1035,64 +1035,50 @@ def run_simulation_with_cohen_coon_tuning(setpoint_array,
 import numpy as np
 from typing import Dict
 
-def mean_step_itae(time_s, sp, pv, window_s=None):
+def mean_step_itae_paper(time_s, sp, pv):
     """
-    Compute mean normalized ITAE across all setpoint steps.
-
-    Parameters
-    ----------
-    time_s : array
-        Time in seconds.
-    sp : array
-        Setpoint values.
-    pv : array
-        Process variable values.
-    window_s : float or None
-        Evaluation window length in seconds after each step.
-        If None, goes until next step change.
+    Compute mean ITAE across all setpoint-change intervals
+    using the paper's definition with arithmetic sequence normalization.
     """
     sp = np.array(sp)
     pv = np.array(pv)
     time_s = np.array(time_s)
 
-    # Detect step changes (where setpoint changes)
+    # Find indices where setpoint changes
     step_indices = np.where(np.diff(sp) != 0)[0] + 1
     if len(step_indices) == 0:
-        return 0.0  # no steps → no ITAE
+        return 0.0  # no step changes
 
     itae_values = []
-    for idx in step_indices:
-        # Step size
-        step_size = abs(sp[idx] - sp[idx - 1])
-        if step_size == 0:
-            continue
-
-        # Segment start/end
+    for i, idx in enumerate(step_indices):
         start_t = time_s[idx]
-        if window_s is not None:
-            end_t = start_t + window_s
+        # End time = next step change or end of simulation
+        if i + 1 < len(step_indices):
+            end_t = time_s[step_indices[i + 1]]
         else:
-            # Until next step or end
-            next_steps = step_indices[step_indices > idx]
-            end_t = time_s[next_steps[0]] if len(next_steps) > 0 else time_s[-1]
+            end_t = time_s[-1]
 
-        # Mask for the current segment
+        # Mask for this interval
         mask = (time_s >= start_t) & (time_s <= end_t)
         seg_time = time_s[mask] - start_t  # relative time
         seg_error = np.abs(sp[mask] - pv[mask])
 
-        # Normalize time to 0→1
-        if seg_time[-1] != 0:
-            t_norm = seg_time / seg_time[-1]
-        else:
-            t_norm = seg_time
+        if len(seg_time) < 2:
+            continue
 
-        # ITAE for this step (normalized by step size)
-        itae_val = np.trapz(t_norm * seg_error, t_norm) / step_size
+        # Paper ITAE: integral of t * |error| over interval
+        numerator = np.trapz(seg_time * seg_error, seg_time)
+
+        # Arithmetic sequence normalization: sum of time points
+        denominator = np.sum(seg_time)
+        if denominator == 0:
+            continue
+
+        itae_val = numerator / denominator
         itae_values.append(itae_val)
 
-    # Return mean across steps
     return np.mean(itae_values) if itae_values else 0.0
+
 
 def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     """Analyze simulation results and calculate performance metrics."""
@@ -1109,6 +1095,7 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     error = temp - setpoint
     mae = np.mean(np.abs(error))
     rmse = np.sqrt(np.mean(error ** 2))
+    std_dev = np.std(error)
     max_error = np.max(np.abs(error))
 
     # Comfort analysis
@@ -1123,8 +1110,8 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     avg_background_loss = np.mean(background_loss)
     total_background_loss = np.sum(background_loss) * dt_hours / 1000
 
-    # Mean ITAE across all step changes
-    itae_value = mean_step_itae(time_s, setpoint, temp, window_s=None)
+    # Mean ITAE across setpoint-change intervals (paper method)
+    itae_value = mean_step_itae_paper(time_s, setpoint, temp)
 
     return {
         'name': results['name'],
@@ -1133,10 +1120,12 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
         'max_error': max_error,
         'comfort_percent': comfort_percent,
         'energy': energy,
+        'std_dev': std_dev,
         'avg_background_loss': avg_background_loss,
         'total_background_loss': total_background_loss,
         'itae': itae_value
     }
+
 
 
 import matplotlib.ticker as ticker
@@ -1230,28 +1219,28 @@ def create_plots(all_results: Dict[str, Dict[str, np.ndarray]]):
 
 
 def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str, float]):
-    """Print comprehensive results including normalized ITAE"""
+    """Print comprehensive results including normalized ITAE and STD"""
 
-    print("\n" + "=" * 110)
+    print("\n" + "=" * 125)
     print("ENVIRONMENT VARIABLE CONFIGURED ROOM THERMAL SIMULATION")
     print("TRUE DISCRETE SETPOINTS & ARRAY BACKGROUND LOSS FROM .ENV FILES")
-    print("=" * 110)
+    print("=" * 125)
     print(
         f"Room Volume: {room_info['volume']:.0f} m³, Thermal Capacity: {room_info['thermal_capacity'] / 1000:.0f} kJ/K")
-    print("-" * 110)
+    print("-" * 125)
 
-    # Added ITAE column to header
-    print(f"{'Controller':<22} {'MAE(°C)':<8} {'RMSE(°C)':<9} {'Max Err':<8} "
+    # Added STD column to header
+    print(f"{'Controller':<22} {'MAE(°C)':<8} {'RMSE(°C)':<9} {'STD(°C)':<9} {'Max Err':<8} "
           f"{'Comfort%':<9} {'Energy(kWh)':<12} {'Avg Loss(kW)':<12} {'Loss(kWh)':<10} {'ITAE(norm)':<11}")
-    print("-" * 110)
+    print("-" * 125)
 
     for data in performance_data:
-        print(f"{data['name']:<22} {data['mae']:<8.3f} {data['rmse']:<9.3f} "
+        print(f"{data['name']:<22} {data['mae']:<8.3f} {data['rmse']:<9.3f} {data['std_dev']:<9.3f} "
               f"{data['max_error']:<8.3f} {data['comfort_percent']:<9.1f} "
               f"{data['energy']:<12.2f} {data['avg_background_loss'] / 1000:<12.2f} "
               f"{data['total_background_loss']:<10.2f} {data['itae']:<11.3f}")
 
-    print("=" * 110)
+    print("=" * 125)
 
     # Analysis
     avg_loss = np.mean([data['avg_background_loss'] for data in performance_data])
