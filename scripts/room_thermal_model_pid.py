@@ -1078,7 +1078,50 @@ def mean_step_itae_paper(time_s, sp, pv):
         itae_values.append(itae_val)
 
     return np.mean(itae_values) if itae_values else 0.0
+import numpy as np
 
+def mean_step_amp(sp, pv):
+    """
+    Compute mean overshoot amplitude (AMP) across step changes.
+    Returns percentage overshoot relative to each step size.
+    """
+    sp = np.array(sp)
+    pv = np.array(pv)
+
+    # Detect step changes (where setpoint changes)
+    step_indices = np.where(np.diff(sp) != 0)[0] + 1
+    if len(step_indices) == 0:
+        return 0.0
+
+    amp_values = []
+    for i, idx in enumerate(step_indices):
+        old_sp = sp[idx - 1]
+        new_sp = sp[idx]
+        step_size = new_sp - old_sp
+        if step_size == 0:
+            continue
+
+        # Determine evaluation segment: until next step change or end
+        if i + 1 < len(step_indices):
+            end_idx = step_indices[i + 1]
+        else:
+            end_idx = len(sp) - 1
+
+        # PV values in this segment after step change
+        seg_pv = pv[idx:end_idx + 1]
+        final_sp = new_sp
+
+        # Overshoot calculation
+        if step_size > 0:  # Upward step
+            overshoot = np.max(seg_pv - final_sp)
+        else:  # Downward step
+            overshoot = np.max(final_sp - seg_pv)
+
+        # Normalize by step size and convert to percentage
+        overshoot_pct = (overshoot / abs(step_size)) * 100
+        amp_values.append(max(0, overshoot_pct))  # Clamp to non-negative
+
+    return np.mean(amp_values) if amp_values else 0.0
 
 def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     """Analyze simulation results and calculate performance metrics."""
@@ -1113,6 +1156,9 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
     # Mean ITAE across setpoint-change intervals (paper method)
     itae_value = mean_step_itae_paper(time_s, setpoint, temp)
 
+    # Mean step amp
+    amp_value = mean_step_amp(setpoint, temp)
+
     return {
         'name': results['name'],
         'mae': mae,
@@ -1123,7 +1169,8 @@ def analyze_results(results: Dict[str, np.ndarray]) -> Dict[str, float]:
         'std_dev': std_dev,
         'avg_background_loss': avg_background_loss,
         'total_background_loss': total_background_loss,
-        'itae': itae_value
+        'itae': itae_value,
+        'amp': amp_value
     }
 
 
@@ -1219,28 +1266,29 @@ def create_plots(all_results: Dict[str, Dict[str, np.ndarray]]):
 
 
 def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str, float]):
-    """Print comprehensive results including normalized ITAE and STD"""
+    """Print comprehensive results including normalized ITAE, STD, and AMP"""
 
-    print("\n" + "=" * 125)
+    print("\n" + "=" * 135)
     print("ENVIRONMENT VARIABLE CONFIGURED ROOM THERMAL SIMULATION")
     print("TRUE DISCRETE SETPOINTS & ARRAY BACKGROUND LOSS FROM .ENV FILES")
-    print("=" * 125)
+    print("=" * 135)
     print(
         f"Room Volume: {room_info['volume']:.0f} m³, Thermal Capacity: {room_info['thermal_capacity'] / 1000:.0f} kJ/K")
-    print("-" * 125)
+    print("-" * 135)
 
-    # Added STD column to header
-    print(f"{'Controller':<22} {'MAE(°C)':<8} {'RMSE(°C)':<9} {'STD(°C)':<9} {'Max Err':<8} "
-          f"{'Comfort%':<9} {'Energy(kWh)':<12} {'Avg Loss(kW)':<12} {'Loss(kWh)':<10} {'ITAE(norm)':<11}")
-    print("-" * 125)
+    # Added STD and AMP columns to header
+    print(f"{'Controller':<22} {'MAE(°C)':<8} {'RMSE(°C)':<9} {'STD(°C)':<9} {'AMP(%)':<8} "
+          f"{'Max Err':<8} {'Comfort%':<9} {'Energy(kWh)':<12} {'Avg Loss(kW)':<12} "
+          f"{'Loss(kWh)':<10} {'ITAE(norm)':<11}")
+    print("-" * 135)
 
     for data in performance_data:
-        print(f"{data['name']:<22} {data['mae']:<8.3f} {data['rmse']:<9.3f} {data['std_dev']:<9.3f} "
+        print(f"{data['name']:<22} {data['mae']:<8.3f} {data['rmse']:<9.3f} {data['std_dev']:<9.3f} {data['amp']:<8.2f} "
               f"{data['max_error']:<8.3f} {data['comfort_percent']:<9.1f} "
               f"{data['energy']:<12.2f} {data['avg_background_loss'] / 1000:<12.2f} "
               f"{data['total_background_loss']:<10.2f} {data['itae']:<11.3f}")
 
-    print("=" * 125)
+    print("=" * 135)
 
     # Analysis
     avg_loss = np.mean([data['avg_background_loss'] for data in performance_data])
@@ -1260,13 +1308,14 @@ def print_results(performance_data: List[Dict[str, float]], room_info: Dict[str,
     best_comfort = max(performance_data, key=lambda x: x['comfort_percent'])
     best_energy = min(performance_data, key=lambda x: x['energy'])
     best_itae = min(performance_data, key=lambda x: x['itae'])
+    best_amp = min(performance_data, key=lambda x: x['amp'])
 
     print(f"\n🏆 BEST PERFORMERS:")
     print(f"Most Accurate: {best_accuracy['name']} (MAE: {best_accuracy['mae']:.3f}°C)")
     print(f"Best Comfort: {best_comfort['name']} ({best_comfort['comfort_percent']:.1f}%)")
     print(f"Most Efficient: {best_energy['name']} ({best_energy['energy']:.2f} kWh)")
     print(f"Lowest ITAE: {best_itae['name']} (ITAE(norm): {best_itae['itae']:.3f})")
-
+    print(f"Lowest AMP: {best_amp['name']} (AMP: {best_amp['amp']:.2f}%)")
 
 def print_env_config():
     """Print current environment variable configuration"""
