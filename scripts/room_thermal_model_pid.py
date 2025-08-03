@@ -632,16 +632,14 @@ def run_simulation_with_ziegler_tuning(setpoint_array,
     """Perform ZN tuning, then run the full simulation and return results."""
 
     # --- Perform ZN tuning ---
-    def short_test(pid, kp, hours=1.5):
+    def short_test(pid, kp, hours=2):
         pid.reset()
         pid.set_tunings(kp, 0, 0)
         sim = ThermalSimulation(cooling_coefficient=0.002)
-        sim.set_background_loss_array(loss_array=[0])
-        print(f'Cooling coefficient for tuning is {sim.cooling_coefficient}')
-        sim.set_background_loss_array(background_loss_array)  # ✅ so it's not None
+        sim.set_background_loss_array(loss_array=np.zeros(4000))
         sim.reset()
 
-        setpoint, ambient = 22.0, 20.0
+        setpoint, ambient = 22.0, 21.0
         temps = []
         for t in np.arange(0, hours * 60, TIME_STEP_MINUTES):
             temp = sim.get_current_temperature()
@@ -650,18 +648,27 @@ def run_simulation_with_ziegler_tuning(setpoint_array,
             temps.append(sim.get_current_temperature())
         return np.array(temps)
 
-    def detect_sustained(temps):
+    def detect_sustained(temps, min_peaks=3, amp_tolerance=0.3, period_tolerance=0.4):
         from scipy.signal import find_peaks
-        peaks, _ = find_peaks(temps)
-        if len(peaks) < 2:
+        peaks, _ = list(find_peaks(temps))
+        if len(peaks) < min_peaks:
             return False, None
+
+        # Period check
         periods = np.diff(peaks) * TIME_STEP_MINUTES
         avg_period = np.mean(periods)
-        return (np.std(periods) < 0.30 * avg_period), avg_period
+        period_ok = (np.std(periods) < period_tolerance * avg_period)
+
+        # Amplitude check
+        peak_vals = temps[peaks]
+        avg_amp = np.mean(peak_vals)
+        amp_ok = (np.std(peak_vals) < amp_tolerance * avg_amp)
+
+        return (period_ok and amp_ok), avg_period
 
     def find_ku_tu(pid):
         kp = 100.0
-        while kp <= 10000:
+        while kp <= 30000: # just bump this up. pid has a clamp so it is ok
             temps = short_test(pid, kp)
             sustained, Tu = detect_sustained(temps)
             print(f"[Tuning] Kp={kp}, sustained={sustained}, Tu={Tu}")
@@ -708,8 +715,7 @@ def run_simulation_with_cohen_coon_tuning(setpoint_array,
         pid.reset()
         pid.set_tunings(0, 0, 0)  # Open loop (PID output fixed)
         sim = ThermalSimulation(cooling_coefficient=0.02)
-        sim.set_background_loss_array(loss_array=[240])
-        sim.set_background_loss_array(background_loss_array)  # ✅ so it's not None
+        sim.set_background_loss_array(loss_array=np.zeros(4000))
         sim.reset()
 
         setpoint, ambient = 20, 18
