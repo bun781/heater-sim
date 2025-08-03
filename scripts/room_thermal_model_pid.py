@@ -748,21 +748,28 @@ def run_simulation_with_cohen_coon_tuning(setpoint_array,
         return K, tau, L
 
     def apply_cohen_coon(pid, K, tau, L):
-        """Apply Cohen–Coon tuning formulas."""
-        if L <= 0:
-            raise ValueError("Invalid dead time (L) detected.")
+        if L <= 0 or tau <= 0:
+            raise ValueError("Invalid process parameters.")
 
-        # PID form
-        Kp = (1 / K) * ((4 / 3) * (tau / L) + 0.25)
-        Ki_hr = Kp / tau
-        Kd_hr = Kp * (L / 4.0)
+        r = L  / tau * 10
+        # Full Cohen–Coon formulas
+        Kp = (1.0 / K) * (tau / L) * ((4.0 / 3.0) + (r / 4.0))
+        Ti = L * (32.0 + 6.0 * r) / (13.0 + 8.0 * r)
+        Td = (4.0 * L) / (11.0 + 2.0 * r)
 
         # Convert to per-minute units for your simulation
-        Ki = Ki_hr / 60.0
-        Kd = Kd_hr * 60.0
+        Ki = (Kp / Ti) / 60.0
+        Kd = (Kp * Td) * 60.0
+
+        # Safety scaling for high lag
+        if r > 0.5:
+            scale = 0.2
+            Kp *= scale
+            Ki *= scale
+            Kd *= scale
 
         pid.set_tunings(Kp, Ki, Kd)
-        print(f"[Cohen–Coon] Applied: Kp={Kp:.4f}, Ki={Ki:.6f}, Kd={Kd:.4f}")
+        print(f"[Cohen–Coon] Applied: Kp={Kp:.4f}, Ki={Ki:.6f}, Kd={Kd:.4f}, L/τ={r:.3f}")
 
     print("\n🚀 Running Simulation with Cohen–Coon Tuning...")
     print("🎯 Running Cohen–Coon tuning...")
