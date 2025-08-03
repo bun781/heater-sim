@@ -714,7 +714,7 @@ def run_simulation_with_cohen_coon_tuning(setpoint_array,
         """Run short open-loop step test with background loss."""
         pid.reset()
         pid.set_tunings(0, 0, 0)  # Open loop (PID output fixed)
-        sim = ThermalSimulation(cooling_coefficient=0.02)
+        sim = ThermalSimulation(cooling_coefficient=0.002)
         sim.set_background_loss_array(loss_array=np.zeros(4000))
         sim.reset()
 
