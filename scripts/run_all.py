@@ -1,9 +1,7 @@
-# thank you ChatGPT for the smart load env trick
-
 import os
 import importlib
 import sys
-
+#thanks chatgpt
 CONTROL_LAGS = ["01", "05", "10"]  # lag minutes
 
 BACKGROUND_LOSS_ARRAYS = [
